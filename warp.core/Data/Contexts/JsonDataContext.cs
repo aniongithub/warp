@@ -143,9 +143,9 @@ public class JsonDataContext : IDataContext
         public string Id { get; set; } = Guid.NewGuid().ToString();
         public string Key { get; set; } = "";
         public string Owner { get; set; } = "";
-        public bool IsActive { get; set; }
+        public bool IsActive { get; set; } = true;
         public List<string> Permissions { get; set; } = new();
-        public float RateLimitHz { get; set; }
+        public float RateLimitHz { get; set; } = 1.0f;
         public DateTime LastUsed { get; set; } = DateTime.MinValue;
         public float LastRate { get; set; } = 0;
     }
