@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Warp Developer Console</title>
+  <link rel="stylesheet" href="index.css" />
+</head>
+<body>
+  <div class="navbar">
+    <span class="navbar-title">Warp Developer Console</span>
+    <nav class="navbar-links">
+      <a href="#" class="navbar-link">Home</a>
+      <a href="#api-keys" class="navbar-link">API Keys</a>
+      <!-- Add more links as needed -->
+    </nav>
+    <div class="auth-dropdown" id="auth-dropdown">
+      <button class="auth-btn" id="auth-btn">Sign In</button>
+      <div class="dropdown-content" id="dropdown-content">
+        <!-- Populated by JS -->
+      </div>
+    </div>
+  </div>
+  <div id="app">
+    <div id="main-content"></div>
+  </div>
+  <script src="index.js"></script>
+</body>
+</html>

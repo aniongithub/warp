@@ -1,0 +1,65 @@
+services:
+  warp:
+    build:
+      context: .
+      dockerfile: dev.Dockerfile
+    ports:
+      - "5000:5000"
+      - "5001:5001"
+    volumes:
+      - ./:/workspace/warp
+    working_dir: /workspace/warp
+    depends_on:
+      - test_api
+    networks:
+      - warp-network
+
+  test_api:
+    build:
+      context: ./test_api
+      dockerfile: dev.Dockerfile
+    ports:
+      - "8081:8081"
+    working_dir: /app
+    volumes:
+      - ./test_api:/app
+    command: ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8081"]
+    networks:
+      - warp-network
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yml:/etc/otelcol-contrib/config.yaml
+    ports:
+      - "4317:4317"  # OTLP gRPC
+      - "8889:8889"  # Prometheus metrics
+    depends_on:
+      - jaeger
+    networks:
+      - warp-network
+
+  jaeger:
+    image: jaegertracing/opentelemetry-all-in-one:latest
+    ports:
+      - "16686:16686"  # Jaeger UI
+    networks:
+      - warp-network
+
+  # surreal-db:
+  #   image: surrealdb/surrealdb:latest
+  #   container_name: surrealdb
+  #   environment:
+  #     SURREAL_USER: root
+  #     SURREAL_PASS: root
+  #   command: >
+  #     start --log debug --username ${SURREAL_USER} --password ${SURREAL_PASS}
+  #   ports:
+  #     - "5432:8000" # Expose SurrealDB HTTP port
+  #   networks:
+  #     - warp-network
+
+networks:
+  warp-network:
+    driver: bridge
