@@ -10,20 +10,7 @@ services:
       - ./:/workspace/warp
     working_dir: /workspace/warp
     depends_on:
-      - test_api
-    networks:
-      - warp-network
-
-  test_api:
-    build:
-      context: ./test_api
-      dockerfile: dev.Dockerfile
-    ports:
-      - "8081:8081"
-    working_dir: /app
-    volumes:
-      - ./test_api:/app
-    command: ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8081"]
+      - otel-collector
     networks:
       - warp-network
 
@@ -46,19 +33,6 @@ services:
       - "16686:16686"  # Jaeger UI
     networks:
       - warp-network
-
-  # surreal-db:
-  #   image: surrealdb/surrealdb:latest
-  #   container_name: surrealdb
-  #   environment:
-  #     SURREAL_USER: root
-  #     SURREAL_PASS: root
-  #   command: >
-  #     start --log debug --username ${SURREAL_USER} --password ${SURREAL_PASS}
-  #   ports:
-  #     - "5432:8000" # Expose SurrealDB HTTP port
-  #   networks:
-  #     - warp-network
 
 networks:
   warp-network:
