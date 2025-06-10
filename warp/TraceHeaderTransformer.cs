@@ -1,25 +1,29 @@
 using Yarp.ReverseProxy.Forwarder;
+using Yarp.ReverseProxy.Transforms;
+using Yarp.ReverseProxy.Transforms.Builder;
 
-public class TraceHeaderTransformer : HttpTransformer
+public class TraceHeaderTransformProvider : ITransformProvider
 {
-    public static readonly TraceHeaderTransformer Instance = new();
-
-    public override async ValueTask TransformRequestAsync(HttpContext httpContext, HttpRequestMessage proxyRequest, string destinationPrefix, CancellationToken cancellationToken)
+    public void Apply(TransformBuilderContext context)
     {
-        // Call the base method to copy default headers and apply default transformations
-        await base.TransformRequestAsync(httpContext, proxyRequest, destinationPrefix, cancellationToken);
-
-        // Always set traceparent/tracestate from Activity.Current (the dispatch span)
-        var activity = System.Diagnostics.Activity.Current;
-        if (activity != null)
+        // Add a request transform to set traceparent/tracestate from Activity.Current
+        context.AddRequestTransform(async transformContext =>
         {
-            proxyRequest.Headers.Remove("traceparent");
-            proxyRequest.Headers.TryAddWithoutValidation("traceparent", activity.Id);
-            if (!string.IsNullOrEmpty(activity.TraceStateString))
+            var activity = System.Diagnostics.Activity.Current;
+            if (activity != null)
             {
-                proxyRequest.Headers.Remove("tracestate");
-                proxyRequest.Headers.TryAddWithoutValidation("tracestate", activity.TraceStateString);
+                transformContext.ProxyRequest.Headers.Remove("traceparent");
+                transformContext.ProxyRequest.Headers.TryAddWithoutValidation("traceparent", activity.Id);
+                if (!string.IsNullOrEmpty(activity.TraceStateString))
+                {
+                    transformContext.ProxyRequest.Headers.Remove("tracestate");
+                    transformContext.ProxyRequest.Headers.TryAddWithoutValidation("tracestate", activity.TraceStateString);
+                }
             }
-        }
+            await ValueTask.CompletedTask;
+        });
     }
+
+    public void ValidateCluster(TransformClusterValidationContext context) { }
+    public void ValidateRoute(TransformRouteValidationContext context) { }
 }
