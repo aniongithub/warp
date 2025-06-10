@@ -39,6 +39,12 @@ public class SqliteDataContext : IDataContext
             LastUsed TEXT,
             LastRate REAL
         );
+        CREATE TABLE IF NOT EXISTS Events (
+            Id TEXT PRIMARY KEY,
+            Key TEXT,
+            EventType TEXT,
+            Timestamp TEXT
+        );
         ";
         cmd.ExecuteNonQuery();
     }
@@ -46,6 +52,7 @@ public class SqliteDataContext : IDataContext
     public IQueryable<IUser> Users => GetUsers().AsQueryable();
     public IQueryable<IApiKey> ApiKeys => GetApiKeys().AsQueryable();
     public IQueryable<IRequest> Requests => GetRequests().AsQueryable();
+    public IQueryable<IEvent> Events => GetEvents().AsQueryable();
 
     private List<IUser> GetUsers()
     {
@@ -111,6 +118,27 @@ public class SqliteDataContext : IDataContext
         return reqs;
     }
 
+    private List<IEvent> GetEvents()
+    {
+        var events = new List<IEvent>();
+        using var conn = new SqliteConnection(_connectionString);
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT Id, Key, EventType, Timestamp FROM Events";
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            events.Add(new Event
+            {
+                Id = reader.GetString(0),
+                Key = reader.GetString(1),
+                EventType = reader.GetString(2),
+                Timestamp = DateTime.Parse(reader.GetString(3))
+            });
+        }
+        return events;
+    }
+
     public Task SaveAsync<T>(T entity) where T : IEntity
     {
         switch (entity)
@@ -123,6 +151,9 @@ public class SqliteDataContext : IDataContext
                 break;
             case IRequest request:
                 UpsertRequest(request);
+                break;
+            case IEvent evt:
+                UpsertEvent(evt);
                 break;
             default:
                 throw new NotSupportedException($"Entity type {typeof(T).Name} not supported.");
@@ -182,6 +213,21 @@ public class SqliteDataContext : IDataContext
         cmd.ExecuteNonQuery();
     }
 
+    private void UpsertEvent(IEvent evt)
+    {
+        using var conn = new SqliteConnection(_connectionString);
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+        INSERT INTO Events (Id, Key, EventType, Timestamp) VALUES ($id, $key, $eventType, $timestamp)
+        ON CONFLICT(Id) DO UPDATE SET Key=$key, EventType=$eventType, Timestamp=$timestamp;";
+        cmd.Parameters.AddWithValue("$id", evt.Id);
+        cmd.Parameters.AddWithValue("$key", evt.Key);
+        cmd.Parameters.AddWithValue("$eventType", evt.EventType);
+        cmd.Parameters.AddWithValue("$timestamp", evt.Timestamp.ToString("o"));
+        cmd.ExecuteNonQuery();
+    }
+
     // Concrete implementations for serialization
     public class User : IUser
     {
@@ -209,7 +255,16 @@ public class SqliteDataContext : IDataContext
         public float LastRate { get; set; } = 0;
     }
 
+    public class Event : IEvent
+    {
+        public string Id { get; set; } = Guid.NewGuid().ToString();
+        public string Key { get; set; } = "";
+        public string EventType { get; set; } = "";
+        public DateTime Timestamp { get; set; } = DateTime.MinValue;
+    }
+
     public IUser CreateUser() => new User();
     public IApiKey CreateApiKey() => new ApiKey();
     public IRequest CreateRequest() => new Request();    
+    public IEvent CreateEvent() => new Event();
 }

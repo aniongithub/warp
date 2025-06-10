@@ -26,6 +26,29 @@ function renderEmptyState(list: HTMLElement) {
   list.innerHTML = `<div class="empty-state">No API keys yet.</div>`;
 }
 
+function renderPermissions(key: ApiKey, onChange: (perm: string, checked: boolean) => void): HTMLElement {
+  const container = document.createElement('div');
+  container.className = 'api-key-permissions';
+  key.permissions.forEach(perm => {
+    const label = document.createElement('label');
+    label.className = 'perm-label';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.value = perm;
+    checkbox.checked = true;
+    if (perm === 'developer') {
+      checkbox.disabled = true;
+    }
+    checkbox.addEventListener('change', (e) => {
+      onChange(perm, (e.target as HTMLInputElement).checked);
+    });
+    label.appendChild(checkbox);
+    label.appendChild(document.createTextNode(' ' + perm));
+    container.appendChild(label);
+  });
+  return container;
+}
+
 function renderKeys(keys: ApiKey[], list: HTMLElement) {
   list.innerHTML = '';
   if (!keys.length) {
@@ -38,10 +61,24 @@ function renderKeys(keys: ApiKey[], list: HTMLElement) {
     card.innerHTML = `
       <div class="api-key-label">Owner: ${key.owner ?? ''}</div>
       <div class="api-key-value">${maskKey(key.key)}</div>
-      <div class="api-key-meta">Last Used: ${key.lastUsed ? new Date(key.lastUsed).toLocaleString() : 'Never'}</div>
       <button class="copy-btn" data-key="${key.key}">Copy</button>
       <button class="delete-btn" data-id="${key.id}">Delete</button>
     `;
+    // Permissions checkboxes
+    const permBox = renderPermissions(key, async (perm, checked) => {
+      if (perm === 'developer') return; // can't remove developer
+      const newPerms = checked
+        ? [...key.permissions, perm]
+        : key.permissions.filter(p => p !== perm);
+      try {
+        await updateApiKeyPermissions(key.id, newPerms);
+        key.permissions = newPerms;
+        renderKeys(keys, list); // re-render
+      } catch {
+        alert('Failed to update permissions.');
+      }
+    });
+    card.appendChild(permBox);
     // Copy button
     card.querySelector('.copy-btn')?.addEventListener('click', () => {
       navigator.clipboard.writeText(key.key);
@@ -93,6 +130,19 @@ async function deleteApiKey(id: string) {
     headers: { 'Authorization': `Bearer ${jwt}` }
   });
   if (!res.ok) throw new Error('Failed to delete API key');
+}
+
+async function updateApiKeyPermissions(id: string, permissions: string[]) {
+  const jwt = await getJwt();
+  const res = await fetch(`${WARP_DEVELOPER_URL}/developer/api-keys/${id}/permissions`, {
+    method: 'PUT',
+    headers: {
+      'Authorization': `Bearer ${jwt}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ permissions })
+  });
+  if (!res.ok) throw new Error('Failed to update permissions');
 }
 
 function showCreateDialog() {

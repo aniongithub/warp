@@ -7,6 +7,7 @@ public interface IDataContext
     IQueryable<IUser> Users { get; }
     IQueryable<IApiKey> ApiKeys { get; }
     IQueryable<IRequest> Requests { get; }
+    IQueryable<IEvent> Events { get; }
 
     Task SaveAsync<T>(T entity) where T : IEntity;
     Task UpsertAsync<T>(T entity, Expression<Func<T, bool>> filter) where T : IEntity;
@@ -14,4 +15,5 @@ public interface IDataContext
     IUser CreateUser();
     IApiKey CreateApiKey();
     IRequest CreateRequest();
+    IEvent CreateEvent();
 }
