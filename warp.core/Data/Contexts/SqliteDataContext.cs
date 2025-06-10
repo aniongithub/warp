@@ -45,6 +45,14 @@ public class SqliteDataContext : IDataContext
             EventType TEXT,
             Timestamp TEXT
         );
+        CREATE TABLE IF NOT EXISTS Quotas (
+            Id TEXT PRIMARY KEY,
+            Key TEXT,
+            QuotaName TEXT,
+            Used REAL,
+            QuotaLimit REAL,
+            Type TEXT
+        );
         ";
         cmd.ExecuteNonQuery();
     }
@@ -52,6 +60,7 @@ public class SqliteDataContext : IDataContext
     public IQueryable<IUser> Users => GetUsers().AsQueryable();
     public IQueryable<IApiKey> ApiKeys => GetApiKeys().AsQueryable();
     public IQueryable<IRequest> Requests => GetRequests().AsQueryable();
+    public IQueryable<IQuota> Quotas => GetQuotas().AsQueryable();
 
     private List<IUser> GetUsers()
     {
@@ -117,6 +126,29 @@ public class SqliteDataContext : IDataContext
         return reqs;
     }
 
+    private List<IQuota> GetQuotas()
+    {
+        var quotas = new List<IQuota>();
+        using var conn = new SqliteConnection(_connectionString);
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT Id, Key, QuotaName, Used, QuotaLimit, Type FROM Quotas";
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            quotas.Add(new Quota
+            {
+                Id = reader.GetString(0),
+                Key = reader.GetString(1),
+                QuotaName = reader.GetString(2),
+                Used = (float)reader.GetDouble(3),
+                Limit = (float)reader.GetDouble(4), // Map QuotaLimit to Limit property
+                Type = reader.GetString(5)
+            });
+        }
+        return quotas;
+    }
+
     public Task SaveAsync<T>(T entity) where T : IEntity
     {
         switch (entity)
@@ -129,6 +161,9 @@ public class SqliteDataContext : IDataContext
                 break;
             case IRequest request:
                 UpsertRequest(request);
+                break;
+            case IQuota quota:
+                UpsertQuota(quota);
                 break;
             default:
                 throw new NotSupportedException($"Entity type {typeof(T).Name} not supported.");
@@ -188,6 +223,23 @@ public class SqliteDataContext : IDataContext
         cmd.ExecuteNonQuery();
     }
 
+    private void UpsertQuota(IQuota quota)
+    {
+        using var conn = new SqliteConnection(_connectionString);
+        conn.Open();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+        INSERT INTO Quotas (Id, Key, QuotaName, Used, QuotaLimit, Type) VALUES ($id, $key, $quotaName, $used, $quotaLimit, $type)
+        ON CONFLICT(Id) DO UPDATE SET Key=$key, QuotaName=$quotaName, Used=$used, QuotaLimit=$quotaLimit, Type=$type;";
+        cmd.Parameters.AddWithValue("$id", quota.Id);
+        cmd.Parameters.AddWithValue("$key", quota.Key);
+        cmd.Parameters.AddWithValue("$quotaName", quota.QuotaName);
+        cmd.Parameters.AddWithValue("$used", quota.Used);
+        cmd.Parameters.AddWithValue("$quotaLimit", quota.Limit);
+        cmd.Parameters.AddWithValue("$type", quota.Type);
+        cmd.ExecuteNonQuery();
+    }
+
     // Concrete implementations for serialization
     public class User : IUser
     {
@@ -215,7 +267,18 @@ public class SqliteDataContext : IDataContext
         public float LastRate { get; set; } = 0;
     }
 
+    public class Quota : IQuota
+    {
+        public string Id { get; set; } = Guid.NewGuid().ToString();
+        public string Key { get; set; } = "";
+        public string QuotaName { get; set; } = "";
+        public float Used { get; set; } = 0;
+        public float Limit { get; set; } = 0; // This maps to QuotaLimit in DB
+        public string Type { get; set; } = "prepaid";
+    }
+
     public IUser CreateUser() => new User();
     public IApiKey CreateApiKey() => new ApiKey();
     public IRequest CreateRequest() => new Request();
+    public IQuota CreateQuota() => new Quota();
 }

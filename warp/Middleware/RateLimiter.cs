@@ -45,17 +45,21 @@ public sealed class RateLimiter : MiddlewareBase<RateLimiterOptions>
                     Logger.LogWarning("Invalid rate limit value in header {Header}: {Value}", header, dynamicRateLimitStr);
             }
         }
-        if (dynamicRateLimit != null)
-            Options.RateLimitHz = dynamicRateLimit.Value;
+        float rateLimitHz = dynamicRateLimit ?? Options.RateLimitHz;
+        float maxTokens = rateLimitHz; // Allow burst up to rate limit
 
         var now = DateTime.UtcNow;
         var request = DataContext.Requests.OrderByDescending(r => r.LastUsed).FirstOrDefault(r => r.Key == key);
-        float lastRate = request?.LastRate ?? 0;
-        DateTime lastUsed = request?.LastUsed ?? DateTime.MinValue;
-        var elapsed = (now - lastUsed).TotalSeconds;
-        // Exponential decay
-        var rate = lastRate * Math.Exp(-elapsed * Options.RateLimitHz);
-        if (rate + 1 > Options.RateLimitHz)
+        float tokens = maxTokens;
+        DateTime lastUsed = now;
+        if (request != null)
+        {
+            lastUsed = request.LastUsed;
+            // Calculate how many tokens to refill since last request
+            var elapsed = (now - lastUsed).TotalSeconds;
+            tokens = Math.Min(maxTokens, request.LastRate + (float)(elapsed * rateLimitHz));
+        }
+        if (tokens < 1)
         {
             context.Response.StatusCode = 429;
             await context.Response.WriteAsync("Rate limit exceeded.");
@@ -66,7 +70,7 @@ public sealed class RateLimiter : MiddlewareBase<RateLimiterOptions>
             if (request != null)
             {
                 request.LastUsed = now;
-                request.LastRate = (float)(rate + 1);
+                request.LastRate = tokens - 1; // Consume one token
                 await DataContext.SaveAsync(request);
             }
             else
@@ -74,8 +78,7 @@ public sealed class RateLimiter : MiddlewareBase<RateLimiterOptions>
                 var newRequest = DataContext.CreateRequest();
                 newRequest.Key = key;
                 newRequest.LastUsed = now;
-                newRequest.LastRate = 1;
-
+                newRequest.LastRate = maxTokens - 1;
                 await DataContext.SaveAsync(newRequest);
             }
         }

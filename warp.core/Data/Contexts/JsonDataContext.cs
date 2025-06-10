@@ -56,6 +56,7 @@ public class JsonDataContext : IDataContext
     public IQueryable<IUser> Users => _store.Users.AsQueryable();
     public IQueryable<IApiKey> ApiKeys => _store.ApiKeys.AsQueryable();
     public IQueryable<IRequest> Requests => _store.Requests.AsQueryable();
+    public IQueryable<IQuota> Quotas => _store.Quotas.AsQueryable();
 
     public Task SaveAsync<T>(T entity) where T : IEntity
     {
@@ -88,6 +89,16 @@ public class JsonDataContext : IDataContext
                 _store.Requests.Add(concreteRequest); // Cast to concrete type for serialization
             else
                 throw new InvalidCastException("The provided IApiKey instance is not of type ApiKey.");
+        }
+        else if (entity is IQuota quota)
+        {
+            var existing = _store.Quotas.FirstOrDefault(q => q.Key == quota.Key && q.QuotaName == quota.QuotaName);
+            if (existing != null)
+                _store.Quotas.Remove(existing);
+            if (quota is Quota concreteQuota)
+                _store.Quotas.Add(concreteQuota);
+            else
+                throw new InvalidCastException("The provided IQuota instance is not of type Quota.");
         }
         else
         {
@@ -126,6 +137,7 @@ public class JsonDataContext : IDataContext
         public List<User> Users { get; set; } = new();
         public List<ApiKey> ApiKeys { get; set; } = new();
         public List<Request> Requests { get; set; } = new();
+        public List<Quota> Quotas { get; set; } = new();
     }
 
     // Concrete implementations for serialization
@@ -158,7 +170,18 @@ public class JsonDataContext : IDataContext
         public float LastRate { get; set; } = 0;
     }
 
+    public class Quota : IQuota
+    {
+        public string Id { get; set; } = Guid.NewGuid().ToString();
+        public string Key { get; set; } = "";
+        public string QuotaName { get; set; } = "";
+        public float Used { get; set; } = 0;
+        public float Limit { get; set; } = 0;
+        public string Type { get; set; } = "prepaid";
+    }
+
     public IUser CreateUser() => new User();
     public IApiKey CreateApiKey() => new ApiKey();
     public IRequest CreateRequest() => new Request();
+    public IQuota CreateQuota() => new Quota();
 }
