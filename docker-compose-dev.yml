@@ -1,0 +1,39 @@
+services:
+  warp:
+    build:
+      context: .
+      dockerfile: dev.Dockerfile
+    ports:
+      - "5000:5000"
+      - "5001:5001"
+    volumes:
+      - ./:/workspace/warp
+    working_dir: /workspace/warp
+    depends_on:
+      - otel-collector
+    networks:
+      - warp-network
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yml:/etc/otelcol-contrib/config.yaml
+    ports:
+      - "4317:4317"  # OTLP gRPC
+      - "8889:8889"  # Prometheus metrics
+    depends_on:
+      - jaeger
+    networks:
+      - warp-network
+
+  jaeger:
+    image: jaegertracing/opentelemetry-all-in-one:latest
+    ports:
+      - "16686:16686"  # Jaeger UI
+    networks:
+      - warp-network
+
+networks:
+  warp-network:
+    driver: bridge

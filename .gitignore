@@ -52,3 +52,61 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+*.manifest
+*.spec
+.env
+.venv
+env/
+venv/
+ENV/
+.ipynb_checkpoints/
+.mypy_cache/
+.pytest_cache/
+.coverage
+.tox/
+.pyre/
+.pytype/
+.dmypy.json
+.cache/
+# https://github.com/github/gitignore/blob/main/Python.gitignore
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+yarn.lock
+.pnpm-debug.log
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# TypeScript
+*.tsbuildinfo
+*.tscache/
+*.ts-node/
+dist/
+lib/
+out/
+coverage/
+# https://github.com/github/gitignore/blob/main/Node.gitignore
+# https://github.com/github/gitignore/blob/main/TypeScript.gitignore
+
+# Ignore any data files
+data/

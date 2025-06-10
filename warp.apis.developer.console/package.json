@@ -1,0 +1,19 @@
+{
+  "scripts": {
+    "build": "webpack --mode production --config webpack.config.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.9",
+    "dotenv-webpack": "^8.1.0",
+    "webpack": "^5.99.9"
+  },
+  "devDependencies": {
+    "@types/http-server": "^0.12.4",
+    "copy-webpack-plugin": "^13.0.0",
+    "html-webpack-plugin": "^5.6.3",
+    "http-server": "^14.1.1",
+    "serve": "^14.2.4",
+    "ts-loader": "^9.5.2",
+    "webpack-cli": "^6.0.1"
+  }
+}

@@ -1,0 +1,44 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "waitForDevConsole",
+            "type": "shell",
+            "command": "while ! nc -z localhost 3030; do sleep 1; done",
+            "group": "none",
+            "problemMatcher": {
+                "base": "$tsc",
+                "background": {
+                    "beginsPattern": ".*",
+                    "endsPattern": ".*"
+                }
+            }
+        },
+        {
+            "label": "devConsolePreLaunch",
+            "type": "shell",
+            "command": "echo 'Preparing DevConsole Chrome debugger...'",
+            "dependsOn": [
+                "waitForDevConsole"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "build-dotnet",
+            "type": "shell",
+            "command": "dotnet build /property:GenerateFullPaths=true /consoleloggerparameters:NoSummary",
+        },
+        {
+            "label": "build-npm",
+            "type": "shell",
+            "command": "cd warp.apis.developer.console && npm install && npm run build",
+        },
+        {
+            "label": "build",
+            "dependsOn": ["build-dotnet", "build-npm"],
+            "group": { "kind": "build", "isDefault": true }
+        }
+    ]
+}

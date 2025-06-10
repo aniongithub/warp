@@ -1,0 +1,33 @@
+{
+  "name": "Warp API Gateway",
+  "dockerComposeFile": "../docker-compose-dev.yml",
+  "features": {
+    "ghcr.io/devcontainers/features/dotnet:1": {
+      "version": "8.0",
+      "sdk": true
+    }
+  },  
+  "service": "warp",
+  "shutdownAction": "stopCompose",
+  "overrideCommand": true,
+  "workspaceFolder": "/workspace/warp",
+  "postAttachCommand": "dotnet restore && dotnet tool restore",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-dotnettools.csharp",
+        "ms-azuretools.vscode-docker",
+        "ms-azuretools.vscode-bicep",
+        "patcx.vscode-nuget-gallery",
+        "fernandoescolar.vscode-solution-explorer",
+        "qwtel.sqlite-viewer",
+        "idered.npm",
+        "msjsdiag.debugger-for-chrome"
+      ]
+    }
+  },
+  "forwardPorts": [
+    5000,
+    5001
+  ]
+}

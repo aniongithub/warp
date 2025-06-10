@@ -1,0 +1,83 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Warp",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp/bin/Debug/net8.0/warp.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/warp",
+            "stopAtEntry": false,
+            "env": {
+                "ASPNETCORE_ENVIRONMENT": "Development",
+                "ASPNETCORE_URLS": "http://0.0.0.0:5000"
+            }
+        },
+        {
+            "name": "DevApi",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp.apis.developer/bin/Debug/net8.0/warp.apis.developer.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/warp.apis.developer",
+            "stopAtEntry": false,
+            "env": {
+                "ASPNETCORE_ENVIRONMENT": "Development",
+                "ASPNETCORE_URLS": "http://0.0.0.0:5002"
+            }
+        },
+        {
+            "name": "AdminApi",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp.apis.admin/bin/Debug/net8.0/warp.apis.admin.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/warp.apis.admin",
+            "stopAtEntry": false,
+            "env": {
+                "ASPNETCORE_ENVIRONMENT": "Development",
+                "ASPNETCORE_URLS": "http://0.0.0.0:5003"
+            }
+        },
+        {
+            "name": "DevConsole (Server)",
+            "type": "node",
+            "request": "launch",
+            "runtimeExecutable": "npx",
+            "preLaunchTask": "build-npm",
+            "runtimeArgs": ["serve", "-s", "dist", "-l", "3030"],
+            "cwd": "${workspaceFolder}/warp.apis.developer.console",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "DevConsole (Chrome)",
+            "type": "chrome",
+            "request": "launch",
+            "browserLaunchLocation": "ui",
+            "runtimeExecutable": "stable",
+            "url": "http://localhost:3030",
+            "webRoot": "${workspaceFolder}/warp.apis.developer.console",
+            "preLaunchTask": "devConsolePreLaunch",
+            "userDataDir": "${workspaceFolder}/.vscode/cache",
+            "sourceMaps": true,
+            "outFiles": [
+                "${workspaceFolder}/warp.api.developer.console/dist/**/*.js"
+            ]
+
+        }
+    ],
+    "compounds": [
+        {
+            "name": "Warp API Gateway",
+            "configurations": ["Warp", "DevApi", "AdminApi"]
+        },
+        {
+            "name": "Developer Console",
+            "configurations": ["DevConsole (Server)", "DevConsole (Chrome)"]
+        }
+    ]
+}
