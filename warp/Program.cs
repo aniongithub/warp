@@ -1,6 +1,7 @@
 using OpenTelemetry.Trace;
 using OpenTelemetry.Resources;
 
+using Warp;
 using Warp.Core.Data;
 using Warp.Core.Helper;
 using Warp.Middleware;
@@ -63,7 +64,7 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
             var configType = configBaseType.GetGenericArguments()[0];
             var configInstance = Activator.CreateInstance(configType);
 
-            
+
             if (descriptor.Options != null)
             {
                 var is_otel_middleware = descriptor.Type.StartsWith("Warp.Middleware.OpenTelemetry", StringComparison.OrdinalIgnoreCase);
@@ -102,10 +103,6 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
             throw;
         }
     }
-    // Register PostTransformMiddlewareRunner for YARP post-transform (predispatch) extensibility
-    builder.Services.AddSingleton<Yarp.ReverseProxy.Forwarder.IPostTransformMiddleware>(
-        sp => new PostTransformMiddlewareRunner(componentMap)
-    );
 
     if (needsOtel)
     {
@@ -114,10 +111,10 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
         var sourceNames = otelSection.GetSection("SourceNames").Get<string[]>() ?? new[] { "Warp" };
 
         // Ensure all routes are traced if OpenTelemetry is enabled
-        var routesSection = config.GetSection("ReverseProxy:Routes");
-        var routes = routesSection.GetChildren().ToList();
+        var routes = config.GetSection("ReverseProxy:Routes").Get<List<RouteDescriptor>>() ?? [];
         foreach (var route in routes)
         {
+            // Set tracing properties directly in the configuration section if possible
             var routeType = route.GetType();
             var tracingEnabledProp = routeType.GetProperty("TracingEnabled");
             if (tracingEnabledProp != null && tracingEnabledProp.CanWrite)
@@ -127,7 +124,7 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
                 tracingProviderProp.SetValue(route, "Warp.Middleware.OpenTelemetryTracingProvider, Warp");
             var traceNameProp = routeType.GetProperty("TraceName");
             if (traceNameProp != null && traceNameProp.CanWrite)
-                traceNameProp.SetValue(route, $"{route["Cluster"]}.{route["Path"]}");
+                traceNameProp.SetValue(route, $"{route.Cluster}.{route.Path}");
         }
 
         // Optionally register OpenTelemetry if configured
@@ -142,11 +139,11 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
                     .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(serviceName))
                     .AddAspNetCoreInstrumentation(options =>
                         options.EnrichWithHttpResponse = (activity, response) =>
-                            activity.SetStatus(response?.StatusCode.IsErrorStatus() == true 
-                                ? ActivityStatusCode.Error 
-                                : ActivityStatusCode.Ok, 
-                                response != null 
-                                    ? $"HTTP {response.StatusCode.GetStatusDescription()}" 
+                            activity.SetStatus(response?.StatusCode.IsErrorStatus() == true
+                                ? ActivityStatusCode.Error
+                                : ActivityStatusCode.Ok,
+                                response != null
+                                    ? $"HTTP {response.StatusCode.GetStatusDescription()}"
                                     : string.Empty))
                     .AddSource(sourceNames)
                     .AddOtlpExporter(otlp => otlp.Endpoint = new Uri(otelEndpoint));
@@ -155,6 +152,11 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
     }
     else
         tempLogger.LogInformation("No OpenTelemetry middleware detected, skipping OpenTelemetry configuration.");
+        
+    // Register PostTransformMiddlewareRunner for YARP post-transform (predispatch) extensibility
+    builder.Services.AddSingleton<Yarp.ReverseProxy.Forwarder.IPostTransformMiddleware>(
+        sp => new PostTransformMiddlewareRunner(componentMap)
+    );
 }
 #pragma warning restore ASP0000 // Do not call 'IServiceCollection.BuildServiceProvider' in 'ConfigureServices'
 
