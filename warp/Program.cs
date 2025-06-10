@@ -32,7 +32,6 @@ foreach (var section in pipelineSection.GetChildren())
 builder.Services
     .AddReverseProxy()
     .LoadFromConfig(config.GetSection("ReverseProxy"));
-    // .AddTransforms<TraceHeaderTransformProvider>(); // Add custom trace header transformer
 
 // Build a map of pipeline components (declare before using block)
 var componentMap = new Dictionary<string, Func<RequestDelegate, RequestDelegate>>();
