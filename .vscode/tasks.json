@@ -31,14 +31,41 @@
             "command": "dotnet build /property:GenerateFullPaths=true /consoleloggerparameters:NoSummary",
         },
         {
-            "label": "build-npm",
+            "label": "build-dev-npm",
             "type": "shell",
             "command": "cd warp.apis.developer.console && npm install && npm run build",
         },
         {
+            "label": "build-admin-npm",
+            "type": "shell",
+            "command": "cd warp.apis.admin.console && npm install && npm run build",
+        },
+        {
             "label": "build",
-            "dependsOn": ["build-dotnet", "build-npm"],
+            "dependsOn": ["build-dotnet", "build-dev-npm", "build-admin-npm"],
             "group": { "kind": "build", "isDefault": true }
+        },
+        {
+            "label": "waitForAdminConsole",
+            "type": "shell",
+            "command": "while ! nc -z localhost 3031; do sleep 1; done",
+            "group": "none",
+            "problemMatcher": {
+                "base": "$tsc",
+                "background": {
+                    "beginsPattern": ".*",
+                    "endsPattern": ".*"
+                }
+            }
+        },
+        {
+            "label": "adminConsolePreLaunch",
+            "type": "shell",
+            "command": "echo 'Preparing AdminConsole Chrome debugger...'",
+            "dependsOn": [
+                "waitForAdminConsole"
+            ],
+            "problemMatcher": []
         }
     ]
 }

@@ -1,0 +1,8 @@
+body { font-family: Arial, sans-serif; background: #f8f9fa; margin: 0; }
+#app { max-width: 700px; margin: 40px auto; background: #fff; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 8px #0001; }
+table { width: 100%; border-collapse: collapse; margin-top: 2rem; }
+th, td { border: 1px solid #ddd; padding: 8px; }
+th { background: #f1f1f1; }
+input[type="text"] { width: 100%; }
+button { padding: 6px 16px; border: none; background: #007bff; color: #fff; border-radius: 4px; cursor: pointer; }
+button:hover { background: #0056b3; }

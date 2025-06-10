@@ -1,0 +1,26 @@
+{
+  "name": "warp.apis.admin.console",
+  "version": "1.0.0",
+  "description": "Admin Console for Warp APIs",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "webpack --mode production --config webpack.config.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.9"
+  },
+  "devDependencies": {
+    "copy-webpack-plugin": "^13.0.0",
+    "css-loader": "^6.0.0",
+    "dotenv-webpack": "^8.1.0",
+    "html-loader": "^5.1.0",
+    "html-webpack-plugin": "^5.6.3",
+    "serve": "^14.2.4",
+    "style-loader": "^3.0.0",
+    "ts-loader": "^9.5.2",
+    "typescript": "^5.0.0",
+    "webpack": "^5.99.9",
+    "webpack-cli": "^6.0.1",
+    "webpack-dev-server": "^4.0.0"
+  }
+}

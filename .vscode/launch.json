@@ -48,7 +48,7 @@
             "type": "node",
             "request": "launch",
             "runtimeExecutable": "npx",
-            "preLaunchTask": "build-npm",
+            "preLaunchTask": "build-dev-npm",
             "runtimeArgs": ["serve", "-s", "dist", "-l", "3030"],
             "cwd": "${workspaceFolder}/warp.apis.developer.console",
             "console": "integratedTerminal"
@@ -68,6 +68,31 @@
                 "${workspaceFolder}/warp.api.developer.console/dist/**/*.js"
             ]
 
+        },
+        {
+            "name": "AdminConsole (Server)",
+            "type": "node",
+            "request": "launch",
+            "runtimeExecutable": "npx",
+            "preLaunchTask": "build-admin-npm",
+            "runtimeArgs": ["serve", "-s", "dist", "-l", "3031"],
+            "cwd": "${workspaceFolder}/warp.apis.admin.console",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "AdminConsole (Chrome)",
+            "type": "chrome",
+            "request": "launch",
+            "browserLaunchLocation": "ui",
+            "runtimeExecutable": "stable",
+            "url": "http://localhost:3031",
+            "webRoot": "${workspaceFolder}/warp.apis.admin.console",
+            "preLaunchTask": "adminConsolePreLaunch",
+            "userDataDir": "${workspaceFolder}/.vscode/cache-admin",
+            "sourceMaps": true,
+            "outFiles": [
+                "${workspaceFolder}/warp.apis.admin.console/dist/**/*.js"
+            ]
         }
     ],
     "compounds": [
@@ -78,6 +103,10 @@
         {
             "name": "Developer Console",
             "configurations": ["DevConsole (Server)", "DevConsole (Chrome)"]
+        },
+        {
+            "name": "Admin Console",
+            "configurations": ["AdminConsole (Server)", "AdminConsole (Chrome)"]
         }
     ]
 }
