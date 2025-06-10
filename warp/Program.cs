@@ -41,6 +41,9 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
     var tempLoggerFactory = tempProvider.GetRequiredService<ILoggerFactory>();
     var tempLogger = tempLoggerFactory.CreateLogger("Startup");
 
+    var needsOtel = pipelineComponents.Any(pc =>
+    pc.Type.Contains("OpenTelemetry", StringComparison.OrdinalIgnoreCase));
+
     // Populate componentMap
     foreach (var descriptor in pipelineComponents)
     {
@@ -59,8 +62,17 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
             tempLogger.LogDebug("Resolving configuration type for middleware: {MiddlewareType}", middlewareType.FullName);
             var configType = configBaseType.GetGenericArguments()[0];
             var configInstance = Activator.CreateInstance(configType);
+
+            
             if (descriptor.Options != null)
             {
+                var is_otel_middleware = descriptor.Type.StartsWith("Warp.Middleware.OpenTelemetry", StringComparison.OrdinalIgnoreCase);
+                if (needsOtel && !is_otel_middleware)
+                {
+                    descriptor.Options["TracingEnabled"] = "true";
+                    descriptor.Options["TracingProvider"] = "Warp.Middleware.OpenTelemetryTracingProvider, Warp";
+                    descriptor.Options["TraceName"] = $"{descriptor.Name}.Trace";
+                }
                 tempLogger.LogDebug("Binding options for middleware: {Name}", descriptor.Name);
                 descriptor.Options.Bind(configInstance); // Assuming Options is IConfigurationSection
             }
@@ -69,6 +81,7 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
                 tempLogger.LogError("Configuration instance for middleware {Name} is null.", descriptor.Name);
                 throw new Exception($"Configuration instance for middleware {descriptor.Name} is null.");
             }
+
             tempLogger.LogDebug("Creating middleware instance for: {Name}", descriptor.Name);
             var loggerInstance = tempLoggerFactory.CreateLogger(descriptor.Name);
             var middleware = ActivatorUtilities.CreateInstance(tempProvider, middlewareType, descriptor.Name, loggerInstance, dataContext!, configInstance)
@@ -94,30 +107,11 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
         sp => new PostTransformMiddlewareRunner(componentMap)
     );
 
-    var needsOtel = pipelineComponents.Any(pc =>
-        pc.Type.Contains("OpenTelemetry", StringComparison.OrdinalIgnoreCase));
-
     if (needsOtel)
     {
         tempLogger.LogInformation("OpenTelemetry middleware detected, configuring OpenTelemetry...");
         var otelSection = builder.Configuration.GetSection("OpenTelemetry");
         var sourceNames = otelSection.GetSection("SourceNames").Get<string[]>() ?? new[] { "Warp" };
-
-        // Ensure all pipeline components are traced and have a trace name if OpenTelemetry is enabled
-        foreach (var pc in pipelineComponents)
-        {
-            if (pc.Type.StartsWith("Warp.Middleware.OpenTelemetry", StringComparison.OrdinalIgnoreCase))
-            {
-                tempLogger.LogDebug("Skipping OpenTelemetry tracing for {Name} as it is already an OpenTelemetry middleware.", pc.Name);
-                continue;
-            }
-            if (pc.Options != null)
-            {
-                pc.Options["TracingEnabled"] = "true";
-                pc.Options["TracingProvider"] = "Warp.Middleware.OpenTelemetryTracingProvider, Warp";
-                pc.Options["TraceName"] = $"{pc.Name}.Trace";
-            }
-        }
 
         // Ensure all routes are traced if OpenTelemetry is enabled
         var routesSection = config.GetSection("ReverseProxy:Routes");
