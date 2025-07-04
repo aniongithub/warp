@@ -27,6 +27,7 @@
       ]
     }
   },
+  "initializeCommand": ".devcontainer/initializeCommand.sh",
   "forwardPorts": [
     5000,
     5001

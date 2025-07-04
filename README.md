@@ -1,97 +1,10 @@
 # warp
 
-A config-driven, batteries-included API gateway based on YARP.
-
-## Getting Started (Devcontainers)
-
-Warp is designed to be developed and run easily in a [VS Code Dev Container](https://code.visualstudio.com/docs/devcontainers/containers). To get started:
-
-1. **Clone the repository**
-
-   ```bash
-   git clone <your-repo-url>
-   cd warp
-   ```
-2. **Open in VS Code**
-
-   - Open the folder in VS Code.
-   - If prompted, "Reopen in Container". This will build and launch the devcontainer with all dependencies (Node, .NET, SQLite, etc.) pre-installed.
-3. **Build and run**
-
-   #### Using VS Code (Recommended)
-
-
-   - Use the VS Code Run/Debug panel and select the **Warp API Gateway** compound configuration to launch the main gateway, Developer API, and Admin API projects together.
-   - To launch the developer console UI, select the **Developer Console** compound configuration. This will start both the static server and a Chrome browser for front-end debugging.
-   - This approach ensures all services are started and debugged in an integrated environment.
-
-   #### Using the Console (Alternative)
-
-   If you prefer not to use the VS Code terminal, you can run the services from your system console:
-
-   1. **Build the backend:**
-
-      ```bash
-      dotnet build
-      ```
-   2. **Run the main API gateway:**
-
-      ```bash
-      dotnet run --project warp/warp.csproj
-      ```
-
-      The API gateway will be available at http://localhost:5000.
-   3. **(Optional) Run Developer and Admin APIs:**
-
-      ```bash
-      dotnet run --project warp.apis.developer/warp.apis.developer.csproj
-      dotnet run --project warp.apis.admin/warp.apis.admin.csproj
-      ```
-   4. **(Optional) Build and serve the Developer Console UI:**
-
-      ```bash
-      cd warp.apis.developer.console
-      npm install
-      npm run build
-      npx serve -s dist -l 3030
-      ```
-
-      The console UI will be available at http://localhost:3030.
-4. **Test the API (with curl)**
-
-   To test the API, you'll need an API key or a JWT token for authentication.
-
-   - **Obtain an API key:**
-     ----------------------
-
-
-     - Sign in for the developer console is currently enabled via Supabase. You will need to add a .env file to the workspace root with the following values
-       - SUPABASE_URL
-       - SUPABASE_ANON_KEY
-       - WARP_DEVELOPER_URL (="http://localhost:5000")
-     - Use the Developer Console UI (see screenshot below) at http://localhost:3030 to create and manage your API keys.![Warp Developer Console](docs/devconsole-apikeys.png)
-   - **Or obtain a JWT token:**
-
-     - If using Google Cloud, you can get a token with:
-       ```bash
-       gcloud auth print-identity-token
-       ```
-
-   Example curl commands:
-
-   ```bash
-   # Using an API key
-   curl -H "X-Api-Key: <your-api-key>" "http://localhost:5000/api/basic/v1/rest/episode/search?title=The+Best+Of+Both+Worlds"
-
-   # Using a JWT token
-   curl -H "Authorization: Bearer <your-jwt-token>" "http://localhost:5000/api/basic/v1/rest/episode/search?title=The+Best+Of+Both+Worlds"
-   ```
-
-   Replace `<your-api-key>` or `<your-jwt-token>` with your actual credentials.
+A config-driven, batteries-included API gateway based on Microsoft's [YARP](https://microsoft.github.io/reverse-proxy/).
 
 ## What is Warp?
 
-Warp is a modern, highly-configurable API gateway built on top of [YARP](https://microsoft.github.io/reverse-proxy/). It is designed for:
+Warp is a modern, lightweight, production-grade, highly-configurable API gateway built on top of Microsoft's [YARP](https://microsoft.github.io/reverse-proxy/). It is designed for:
 
 - **Declarative API productization**: Monetize, secure, and manage APIs with minimal code.
 - **Ultra-low latency**: All enforcement (auth, quota, rate limiting) is done in-process, no per-request RPCs.
@@ -153,7 +66,7 @@ All routes, clusters, and middleware are configured in `appsettings.json`. Examp
 
 ### Quota & Billing Model
 
-- **Quotas** are centrally named (e.g., `basic_quota`, `pro_quota`) and can be prepaid (hard limit) or postpaid (soft limit, bill later).
+- **Quotas** are centrally named (e.g., `basic_quota`, `pro_quota`) and can be prepaid (hard-limit) or postpaid (soft-limit, bill later).
 - **QuotaChecker** middleware enforces usage and can auto-create quotas for new users/keys.
 - **Billing** is performed out-of-band (e.g., via a cron job that processes quota deltas or negative balances).
 
@@ -168,19 +81,71 @@ All routes, clusters, and middleware are configured in `appsettings.json`. Examp
 - Register your middleware in `PipelineComponents` and reference it in route metadata.
 - All middleware can access the shared `IDataContext` for user, key, quota, and request state.
 
-## Data Storage
+## Persistence and Data Storage
 
 - **Pluggable data context**: Use SQLite or JSON file for persistence (see `warp.core/Data/Contexts/`). You can also add new storage backends by implementing the `IDataContext` interface and placing your implementation in this directory.
 - **Schema**: Users, API keys, quotas, and requests are all stored and managed centrally.
 
-## VS Code Launch Configurations
+## Getting Started (Devcontainers)
+
+Warp is designed to be developed and run easily in a [VS Code Dev Container](https://code.visualstudio.com/docs/devcontainers/containers). To get started:
+
+To use this environment, you should open the repository in [Visual Studio Code](https://code.visualstudio.com/) with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers). This ensures all required tools and dependencies are automatically installed and configured.
+
+**Steps:**
+
+1. **Install VS Code** and the [Dev Containers extension](https://code.visualstudio.com/docs/devcontainers/containers).
+2. **Clone this repository** to your local machine.
+3. **Open the folder in VS Code**. When prompted, select **"Reopen in Container"** to launch the devcontainer.
+4. The environment will build automatically, installing all dependencies and tools as defined in `.devcontainer/`.
+
+For more details, see the [VS Code Dev Containers documentation](https://code.visualstudio.com/docs/devcontainers/containers).
+
+### **Development**
+
+#### Using VS Code (Recommended)
+
+- Use the VS Code Run/Debug panel and select the **Warp API Gateway** compound configuration to launch the main gateway, Developer API, and Admin API projects together.
+- To launch the developer console UI, select the **Developer Console** compound configuration. This will start both the static server and a Chrome browser for front-end debugging.
+- This approach ensures all services are started and debugged in an integrated environment.
+
+#### VS Code Launch Configurations
 
 This repository includes pre-configured launch settings for development and debugging:
 
 - **Warp API Gateway**: Launches the main gateway (`Warp`), Developer API (`DevApi`), and Admin API (`AdminApi`) projects together for a full backend environment.
 - **Developer Console**: Launches both the static server for the developer console UI and a Chrome browser instance for front-end debugging.
 
-You can select these compound configurations from the VS Code Run/Debug panel to start all related services at once.
+You can select these compound configurations from the VS Code Run/Debug panel to start all related services at once. This also means you can use a single VS code window to debug flow all the way from the developer console to the middleware in your API gateway seamlessly.
+
+### **Test the API**
+
+To test the API, you'll need a Warp API gateway API key or a JWT token for authentication
+
+- **Sign into the Warp developer console using Supabase**
+  Sign in for the developer console is currently enabled via Supabase. You will need to add a .env file to the workspace root with the following values
+  - SUPABASE_URL
+  - SUPABASE_ANON_KEY
+  - WARP_DEVELOPER_URL (="http://localhost:5000" by default)
+
+  Now you can Use the Developer Console UI (see screenshot below) at http://localhost:3030 to create and manage your API keys.![Warp Developer Console](docs/devconsole-apikeys.png)
+
+- **Or obtain a JWT token via gcloud cli**: If using Google Cloud, you can get a token with:
+  ```bash
+  gcloud auth print-identity-token
+    ```
+
+Here are some example curl commands you can use to test the example routes once you have your JWT or API key.
+
+```bash
+# Using an API key
+curl -H "X-Api-Key: <your-api-key>" "http://localhost:5000/api/basic/v1/rest/episode/search?title=The+Best+Of+Both+Worlds"
+
+# Using a JWT token
+curl -H "Authorization: Bearer <your-jwt-token>" "http://localhost:5000/api/basic/v1/rest/episode/search?title=The+Best+Of+Both+Worlds"
+```
+
+Replace `<your-api-key>` or `<your-jwt-token>` with your actual credentials.
 
 ## Contributing
 
