@@ -63,7 +63,7 @@ RUN dotnet build /property:GenerateFullPaths=true /consoleloggerparameters:NoSum
 # Publish the project
 RUN dotnet publish -c Release -o /workspace/warp/publish /property:Generate
 
-FROM mcr.microsoft.com/dotnet/runtime:9.0-bookworm-slim AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:9.0-bookworm-slim AS runtime
 
 # Set the working directory
 WORKDIR /warp
@@ -72,4 +72,4 @@ WORKDIR /warp
 COPY --from=builder /workspace/warp/publish .
 
 # Set the entry point for the container
-ENTRYPOINT ["dotnet", "warp.dll"]
+CMD ["dotnet", "warp.dll"]
