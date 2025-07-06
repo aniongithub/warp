@@ -18,7 +18,8 @@ RUN apt-get update && apt-get install -y \
 # Install the .NET SDK for ASP.NET Core 10.0 (preview)
 RUN curl -SL --output /tmp/dotnet-install.sh https://dot.net/v1/dotnet-install.sh && \
     bash /tmp/dotnet-install.sh --version 10.0.100-preview.5.25265.106 --install-dir /usr/share/dotnet && \
-    # bash /tmp/dotnet-install.sh --runtime dotnet --version 9.0.5 --install-dir /usr/share/dotnet && \
+    bash /tmp/dotnet-install.sh --runtime dotnet --version 9.0.5 --install-dir /usr/share/dotnet && \
+    bash /tmp/dotnet-install.sh --runtime aspnetcore --version 9.0.5 --install-dir /usr/share/dotnet && \
     rm /tmp/dotnet-install.sh
 
 # Install and build our fork of yarp for post-transform fixes

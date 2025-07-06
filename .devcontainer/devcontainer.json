@@ -1,12 +1,6 @@
 {
   "name": "Warp API Gateway",
   "dockerComposeFile": "docker-compose-dev.yml",
-  "features": {
-    "ghcr.io/devcontainers/features/dotnet:1": {
-      "version": "8.0",
-      "sdk": true
-    }
-  },  
   "service": "warp",
   "shutdownAction": "stopCompose",
   "overrideCommand": true,
