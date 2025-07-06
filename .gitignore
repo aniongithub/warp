@@ -110,3 +110,7 @@ coverage/
 
 # Ignore any data files
 data/
+
+# Ignore generated OpenAPI specs
+warp.apis.admin.yml
+warp.apis.developer.yml

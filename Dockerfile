@@ -74,8 +74,17 @@ FROM mcr.microsoft.com/dotnet/aspnet:9.0-bookworm-slim AS runtime
 # Set the working directory
 WORKDIR /warp
 
-# Copy the published output from the builder stage
+# Copy the published outputs from the builder stage.
+# Binaries, configuration, and OpenAPI specs
 COPY --from=builder /workspace/warp/publish .
+# Copy the warp-internal generated OpenAPI specs from the builder stage
+COPY --from=builder /workspace/warp/warp.apis.*.yml .
+
+# Copy our example configuration - this can be overridden by mounting a volume
+COPY --from=builder /workspace/warp/config ./config
+
+# Copy the external OpenAPI specs to the spec directory - this can be overridden by mounting a volume
+COPY --from=builder /workspace/warp/spec ./spec
 
 # Set the entry point for the container
 CMD ["dotnet", "warp.dll"]

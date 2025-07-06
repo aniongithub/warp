@@ -9,6 +9,13 @@ public class SqliteDataContext : IDataContext
 
     public SqliteDataContext(string filePath)
     {
+        // Ensure the file path is valid and accessible, otherwise create the directory
+        if (string.IsNullOrWhiteSpace(filePath))
+            throw new ArgumentException("Database file path cannot be null or empty.", nameof(filePath));
+        var dbDirectory = Path.GetDirectoryName(filePath);
+        if (dbDirectory != null && !Directory.Exists(dbDirectory))
+            Directory.CreateDirectory(dbDirectory);
+
         _connectionString = $"Data Source={filePath}";
         InitializeDatabase();
     }

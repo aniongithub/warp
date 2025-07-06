@@ -16,7 +16,7 @@
 
   <Target Name="GenerateSwagger" AfterTargets="Build">
     <PropertyGroup>
-      <SwaggerOutputFile>$({ProjectDir})$(AssemblyName).yml</SwaggerOutputFile>
+      <SwaggerOutputFile>$({SolutionDir})$(AssemblyName).yml</SwaggerOutputFile>
     </PropertyGroup>
     <Exec Command="dotnet swagger tofile --yaml --output $(SwaggerOutputFile) $(AssemblyName)/$(OutputPath)$(AssemblyName).dll v1" 
           WorkingDirectory="$(SolutionDir)" />

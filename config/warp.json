@@ -144,21 +144,21 @@
       "Name": "DevOpenApiValidator",
       "Type": "Warp.Middleware.OpenApiValidator, warp",
       "Options": {
-        "SpecFile": "warp.apis.developer/warp.apis.developer.yml"
+        "SpecFile": "warp.apis.developer.yml"
       }
     },
     {
       "Name": "AdminOpenApiValidator",
       "Type": "Warp.Middleware.OpenApiValidator, warp",
       "Options": {
-        "SpecFile": "warp.apis.admin/warp.apis.admin.yml"
+        "SpecFile": "warp.apis.admin.yml"
       }
     },
     {
       "Name": "StapiOpenApiValidator",
       "Type": "Warp.Middleware.OpenApiValidator, warp",
       "Options": {
-        "SpecFile": "stapi/stapi.yaml"
+        "SpecFile": "spec/stapi.yaml"
       }
     },
     {
