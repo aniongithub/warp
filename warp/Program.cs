@@ -6,9 +6,14 @@ using Warp.Core.Data;
 using Warp.Core.Helper;
 using Warp.Middleware;
 using System.Diagnostics;
+using Microsoft.VisualBasic;
+using System.Reflection;
 
 var builder = WebApplication.CreateBuilder(args);
-var config = builder.Configuration;
+
+// Load configuration from appsettings.json or from a file specified in the WARP_CONFIG_FILE environment variable
+var configBuilder = new ConfigurationBuilder().AddWarpConfiguration("warp");
+var config = configBuilder.Build();
 
 // Use the extension method to create the DataContext from configuration
 var dataContext = config.GetSection("DataContext").CreateFromConfiguration();

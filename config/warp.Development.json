@@ -1,0 +1,10 @@
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Debug",
+      "Yarp.ReverseProxy": "Debug",
+      "Microsoft.AspNetCore": "Information"
+    }
+  },
+  "AllowedHosts": "*"
+}

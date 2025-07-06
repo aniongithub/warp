@@ -2,7 +2,7 @@
   "DataContext": {
     "Type": "Warp.Core.Data.Contexts.SqliteDataContext, warp.core",
     "args": {
-      "filePath": "../data/data.db"
+      "filePath": "data/data.db"
     }
   },
   "OpenTelemetry": {

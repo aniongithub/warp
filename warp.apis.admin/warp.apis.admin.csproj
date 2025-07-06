@@ -22,7 +22,8 @@
     <PropertyGroup>
       <SwaggerOutputFile>$({ProjectDir})$(AssemblyName).yml</SwaggerOutputFile>
     </PropertyGroup>
-    <Exec Command="dotnet swagger tofile --yaml --output $(SwaggerOutputFile) $(OutputPath)$(AssemblyName).dll v1" />
+    <Exec Command="dotnet swagger tofile --yaml --output $(SwaggerOutputFile) $(AssemblyName)/$(OutputPath)$(AssemblyName).dll v1" 
+          WorkingDirectory="$(SolutionDir)" />
   </Target>
 
 </Project>
