@@ -1,0 +1,103 @@
+openapi: 3.0.4
+info:
+  title: 'warp.apis.developer, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null'
+  version: '1.0'
+paths:
+  /developer/health:
+    get:
+      tags:
+        - 'warp.apis.developer, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null'
+      responses:
+        '200':
+          description: OK
+  /developer/api-keys:
+    post:
+      tags:
+        - 'warp.apis.developer, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null'
+      responses:
+        '200':
+          description: OK
+    get:
+      tags:
+        - 'warp.apis.developer, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null'
+      responses:
+        '200':
+          description: OK
+  '/developer/api-keys/{id}':
+    delete:
+      tags:
+        - 'warp.apis.developer, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  '/developer/api-keys/{id}/permissions':
+    put:
+      tags:
+        - 'warp.apis.developer, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: string
+        required: true
+      responses:
+        '200':
+          description: OK
+    get:
+      tags:
+        - 'warp.apis.developer, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  '/developer/api-keys/{id}/is-active':
+    get:
+      tags:
+        - 'warp.apis.developer, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+    put:
+      tags:
+        - 'warp.apis.developer, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: boolean
+        required: true
+      responses:
+        '200':
+          description: OK
+components: { }

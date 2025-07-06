@@ -14,6 +14,8 @@ const int USERS_PAGESIZE = 25;
 var builder = WebApplication.CreateBuilder(args);
 var assemblyName = Assembly.GetExecutingAssembly().GetName().Name ?? "warp.apis.admin";
 
+builder.Configuration.AddWarpConfiguration(assemblyName);
+
 // Load DataContext from config (use your extension method if available)
 var dataContextSection = builder.Configuration.GetSection("DataContext");
 IDataContext dataContext;

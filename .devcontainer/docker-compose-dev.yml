@@ -1,15 +1,16 @@
 services:
   warp:
     build:
-      context: .
-      dockerfile: dev.Dockerfile
+      context: ..
+      dockerfile: Dockerfile
+      target: dev
     env_file:
-      - .env
+      - ../.env
     ports:
       - "5000:5000"
       - "5001:5001"
     volumes:
-      - ./:/workspace/warp
+      - ..:/workspace/warp
     working_dir: /workspace/warp
     depends_on:
       - otel-collector
@@ -20,7 +21,7 @@ services:
     image: otel/opentelemetry-collector-contrib:latest
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     volumes:
-      - ./otel-collector-config.yml:/etc/otelcol-contrib/config.yaml
+      - ../otel-collector-config.yml:/etc/otelcol-contrib/config.yaml
     ports:
       - "4317:4317"  # OTLP gRPC
       - "8889:8889"  # Prometheus metrics

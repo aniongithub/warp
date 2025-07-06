@@ -1,8 +1,13 @@
 using System.Reflection;
 using Microsoft.AspNetCore.Mvc;
+
 using Warp.Core.Data;
+using Warp.Core.Helper;
 
 var builder = WebApplication.CreateBuilder(args);
+var assemblyName = Assembly.GetExecutingAssembly().GetName().Name ?? "warp.apis.developer";
+
+builder.Configuration.AddWarpConfiguration(assemblyName);
 
 var dataContextSection = builder.Configuration.GetSection("DataContext");
 IDataContext dataContext;

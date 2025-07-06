@@ -6,9 +6,9 @@
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build-dotnet",
-            "program": "${workspaceFolder}/warp/bin/Debug/net8.0/warp.dll",
+            "program": "${workspaceFolder}/warp/bin/Debug/net9.0/warp.dll",
             "args": [],
-            "cwd": "${workspaceFolder}/warp",
+            "cwd": "${workspaceFolder}",
             "stopAtEntry": false,
             "env": {
                 "ASPNETCORE_ENVIRONMENT": "Development",
@@ -20,13 +20,13 @@
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build-dotnet",
-            "program": "${workspaceFolder}/warp.apis.developer/bin/Debug/net8.0/warp.apis.developer.dll",
+            "program": "${workspaceFolder}/warp.apis.developer/bin/Debug/net9.0/warp.apis.developer.dll",
             "args": [],
-            "cwd": "${workspaceFolder}/warp.apis.developer",
+            "cwd": "${workspaceFolder}",
             "stopAtEntry": false,
             "env": {
                 "ASPNETCORE_ENVIRONMENT": "Development",
-                "ASPNETCORE_URLS": "http://0.0.0.0:5002"
+                "ASPNETCORE_URLS": "http://127.0.0.1:5002"
             }
         },
         {
@@ -34,13 +34,13 @@
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build-dotnet",
-            "program": "${workspaceFolder}/warp.apis.admin/bin/Debug/net8.0/warp.apis.admin.dll",
+            "program": "${workspaceFolder}/warp.apis.admin/bin/Debug/net9.0/warp.apis.admin.dll",
             "args": [],
-            "cwd": "${workspaceFolder}/warp.apis.admin",
+            "cwd": "${workspaceFolder}",
             "stopAtEntry": false,
             "env": {
                 "ASPNETCORE_ENVIRONMENT": "Development",
-                "ASPNETCORE_URLS": "http://0.0.0.0:5003"
+                "ASPNETCORE_URLS": "http://127.0.0.1:5003"
             }
         },
         {
