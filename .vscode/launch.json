@@ -26,7 +26,7 @@
             "stopAtEntry": false,
             "env": {
                 "ASPNETCORE_ENVIRONMENT": "Development",
-                "ASPNETCORE_URLS": "http://0.0.0.0:5002"
+                "ASPNETCORE_URLS": "http://127.0.0.1:5002"
             }
         },
         {
@@ -40,7 +40,7 @@
             "stopAtEntry": false,
             "env": {
                 "ASPNETCORE_ENVIRONMENT": "Development",
-                "ASPNETCORE_URLS": "http://0.0.0.0:5003"
+                "ASPNETCORE_URLS": "http://127.0.0.1:5003"
             }
         },
         {

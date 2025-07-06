@@ -41,7 +41,8 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | b
     && nvm alias default 'lts/*' \
     && npm install -g npm \
     && sudo ln -s $NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node/)/bin/node /usr/local/bin/node \
-    && sudo ln -s $NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node/)/bin/npm /usr/local/bin/npm
+    && sudo ln -s $NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node/)/bin/npm /usr/local/bin/npm \
+    && sudo ln -s $NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node/)/bin/npx /usr/local/bin/npx
 ENV PATH="$NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node/)/bin/:$PATH"
 
 # Builder image for the Warp API Gateway

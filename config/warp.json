@@ -67,14 +67,14 @@
       "admin_api_cluster": {
         "Destinations": {
           "admin": {
-            "Address": "http://localhost:5003/"
+            "Address": "http://127.0.0.1:5003/"
           }
         }
       },
       "developer_api_cluster": {
         "Destinations": {
           "developer": {
-            "Address": "http://localhost:5002/"
+            "Address": "http://127.0.0.1:5002/"
           }
         }
       },
