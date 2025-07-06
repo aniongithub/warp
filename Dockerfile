@@ -1,4 +1,4 @@
-# Base image: .NET SDK for building and running ASP.NET Core
+# Base image: Devcontainer image for .NET 9.0 with ASP.NET Core 10.0 (preview)
 FROM mcr.microsoft.com/devcontainers/dotnet:9.0-bookworm as dev
 
 # Install common dev tools
@@ -43,6 +43,8 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | b
     && sudo ln -s $NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node/)/bin/npm /usr/local/bin/npm
 ENV PATH="$NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node/)/bin/:$PATH"
 
+# Builder image for the Warp API Gateway
+# This stage builds the Warp API Gateway application using the .NET SDK
 FROM dev as builder
 
 USER root
@@ -63,6 +65,8 @@ RUN dotnet build /property:GenerateFullPaths=true /consoleloggerparameters:NoSum
 # Publish the project
 RUN dotnet publish -c Release -o /workspace/warp/publish /property:Generate
 
+# Final runtime image for the Warp API Gateway
+# This stage runs the published application using the ASP.NET Core runtime
 FROM mcr.microsoft.com/dotnet/aspnet:9.0-bookworm-slim AS runtime
 
 # Set the working directory
