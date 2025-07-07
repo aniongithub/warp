@@ -7,7 +7,7 @@ using Warp.Core.Helper;
 var builder = WebApplication.CreateBuilder(args);
 var assemblyName = Assembly.GetExecutingAssembly().GetName().Name ?? "warp.apis.developer";
 
-builder.Configuration.AddWarpConfiguration(assemblyName);
+builder.Configuration.AddWarpConfiguration(assemblyName, clearExistingSources: true);
 
 var dataContextSection = builder.Configuration.GetSection("DataContext");
 IDataContext dataContext;

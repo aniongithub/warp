@@ -7,5 +7,12 @@
   },
   "OpenTelemetry": {
     "Endpoint": "http://otel-collector:4317"
+  },
+  "Kestrel": {
+    "Endpoints": {
+      "Internal": {
+        "Url": "http://127.0.0.1:5002"
+      }
+    }
   }
 }

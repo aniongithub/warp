@@ -71,6 +71,17 @@ RUN dotnet publish -c Release -o /workspace/warp/publish /property:Generate
 # This stage runs the published application using the ASP.NET Core runtime
 FROM mcr.microsoft.com/dotnet/aspnet:9.0-bookworm-slim AS runtime
 
+# Define the port as an argument with default value
+ARG WARP_PORT=5000
+
+# Install supervisor for process management
+RUN apt-get update && apt-get install -y supervisor &&\
+    apt-get clean &&\
+    rm -rf /var/lib/apt/lists/*
+
+# Create supervisor log directory
+RUN mkdir -p /var/log/supervisor
+
 # Set the working directory
 WORKDIR /warp
 
@@ -86,5 +97,11 @@ COPY --from=builder /workspace/warp/config ./config
 # Copy the external OpenAPI specs to the spec directory - this can be overridden by mounting a volume
 COPY --from=builder /workspace/warp/spec ./spec
 
-# Set the entry point for the container
-CMD ["dotnet", "warp.dll"]
+# Copy supervisord configuration
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Only expose the API Gateway port (internal APIs are accessed through the gateway)
+EXPOSE ${WARP_PORT}
+
+# Set the entry point for the container to use supervisord
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
