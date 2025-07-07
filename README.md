@@ -114,38 +114,23 @@ For more details, see the [VS Code Dev Containers documentation](https://code.vi
 This repository includes pre-configured launch settings for development and debugging:
 
 - **Warp API Gateway**: Launches the main gateway (`Warp`), Developer API (`DevApi`), and Admin API (`AdminApi`) projects together for a full backend environment.
-- **Developer Console**: Launches both the static server for the developer console UI and a Chrome browser instance for front-end debugging.
 
 You can select these compound configurations from the VS Code Run/Debug panel to start all related services at once. This also means you can use a single VS code window to debug flow all the way from the developer console to the middleware in your API gateway seamlessly.
 
 ### **Test the API**
+Ensure that the "Warp API Gateway" launch configuration is active before testing and then run any of the scripts under `scripts/tests`.
 
-To test the API, you'll need a Warp API gateway API key or a JWT token for authentication
+These scripts will:
+ - Prompt you to login to Google (`google-login.sh`)
+ - Use the JWT to fetch a WARP API key for your username (`get-api-key.sh`)
+ - Use the WARP API key to perform a search using the Star Trek API for "the best of both worlds" (`the-best-of-both-worlds.sh`)
 
-- **Sign into the Warp developer console using Supabase**
-  Sign in for the developer console is currently enabled via Supabase. You will need to add a .env file to the workspace root with the following values
-  - SUPABASE_URL
-  - SUPABASE_ANON_KEY
-  - WARP_DEVELOPER_URL (="http://localhost:5000" by default)
+You can use the OpenAPI specs in
+ - `spec/stapi.yaml` 
+ - `warp.apis.admin.yml`
+ - `warp.apis.developer.yml`
 
-  Now you can Use the Developer Console UI (see screenshot below) at http://localhost:3030 to create and manage your API keys.![Warp Developer Console](docs/devconsole-apikeys.png)
-
-- **Or obtain a JWT token via gcloud cli**: If using Google Cloud, you can get a token with:
-  ```bash
-  gcloud auth print-identity-token
-    ```
-
-Here are some example curl commands you can use to test the example routes once you have your JWT or API key.
-
-```bash
-# Using an API key
-curl -H "X-Api-Key: <your-api-key>" "http://localhost:5000/api/basic/v1/rest/episode/search?title=The+Best+Of+Both+Worlds"
-
-# Using a JWT token
-curl -H "Authorization: Bearer <your-jwt-token>" "http://localhost:5000/api/basic/v1/rest/episode/search?title=The+Best+Of+Both+Worlds"
-```
-
-Replace `<your-api-key>` or `<your-jwt-token>` with your actual credentials.
+to formulate additional commands for testing different functionalities of Warp or your API.
 
 ## Contributing
 

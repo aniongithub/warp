@@ -89,6 +89,20 @@ app.MapGet("/developer/api-keys", async (HttpContext context, [FromServices] IDa
         await dataContext.SaveAsync(user);
     }
     var keys = dataContext.ApiKeys.Where(k => k.Owner == email && k.IsActive).ToList();
+
+    // If there no keys, create a default one
+    if (!keys.Any())
+    {
+        var apiKey = dataContext.CreateApiKey();
+        apiKey.Id = Guid.NewGuid().ToString();
+        apiKey.Key = Guid.NewGuid().ToString(); // Generate a random key
+        apiKey.Owner = email;
+        apiKey.IsActive = true;
+        apiKey.Permissions = new List<string> { "free" }; // Default permissions
+        await dataContext.SaveAsync(apiKey);
+        keys.Add(apiKey);
+    }
+
     return Results.Ok(keys);
 });
 

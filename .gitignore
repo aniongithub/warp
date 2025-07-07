@@ -67,7 +67,6 @@ build/
 pip-wheel-metadata/
 *.manifest
 *.spec
-.env
 .venv
 env/
 venv/
