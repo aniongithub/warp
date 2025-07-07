@@ -2,6 +2,11 @@
 
 # This script retrieves an API key from our Warp Developer API.
 
+# Get the script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+${SCRIPT_DIR}/../google-login.sh --bare
+
 API_KEY=$(curl -s -f -H "Authorization: Bearer $(gcloud auth print-identity-token)" http://localhost:5000/developer/api-keys | jq -r '.[0].key')
 
 if [[ -z "$API_KEY" ]]; then
