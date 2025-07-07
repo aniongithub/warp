@@ -1,0 +1,43 @@
+stages:
+  - test
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+
+build-and-test-docker:
+  stage: test
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_VERIFY: 1
+    DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+  before_script:
+    - docker info
+    - apk add --no-cache curl
+  script:
+    - echo "Building Warp Docker container..."
+    - docker build -t warp:test -f Dockerfile .
+    - echo "Docker build completed successfully"
+    - docker images | grep warp
+    - echo "Starting container for health checks..."
+    - docker run -d --name warp-test -p 5000:5000 warp:test
+    - echo "Waiting for container to start..."
+    - sleep 30
+    - echo "Testing health endpoints..."
+    - curl -f http://localhost:5000/admin/health || echo "Admin health check failed"
+    - curl -f http://localhost:5000/developer/health || echo "Developer health check failed"
+    - echo "Checking container logs..."
+    - docker logs warp-test
+    - echo "Stopping test container..."
+    - docker stop warp-test
+    - docker rm warp-test
+  after_script:
+    - docker stop warp-test || true
+    - docker rm warp-test || true
+  rules:
+    - if: $CI_COMMIT_BRANCH
+  tags:
+    - docker
