@@ -6,6 +6,7 @@ services:
       target: dev
     env_file:
       - ../.env
+      - ../.env.local
     ports:
       - "5000:5000"
       - "5001:5001"

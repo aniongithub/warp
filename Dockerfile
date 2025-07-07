@@ -30,20 +30,16 @@ RUN cd /usr/local/src &&\
         git checkout backport-post-transform-hook &&\
         dotnet pack --configuration Release --output /usr/local/packages
 
-USER vscode
+# Install Google Cloud CLI
+RUN apt-get update && apt-get install -y curl gnupg \
+  && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.cloud.google.com/apt cloud-sdk main" \
+     | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list \
+  && curl https://packages.cloud.google.com/apt/doc/apt-key.gpg \
+     | apt-key --keyring /usr/share/keyrings/cloud.google.gpg add - \
+  && apt-get update && apt-get install -y google-cloud-cli \
+  && apt-get clean
 
-# Install NVM, Node.js (latest LTS), and npm
-ENV NVM_DIR=/home/vscode/.nvm
-RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash \
-    && . "$NVM_DIR/nvm.sh" \
-    && nvm install --lts \
-    && nvm use --lts \
-    && nvm alias default 'lts/*' \
-    && npm install -g npm \
-    && sudo ln -s $NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node/)/bin/node /usr/local/bin/node \
-    && sudo ln -s $NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node/)/bin/npm /usr/local/bin/npm \
-    && sudo ln -s $NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node/)/bin/npx /usr/local/bin/npx
-ENV PATH="$NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node/)/bin/:$PATH"
+USER vscode
 
 # Builder image for the Warp API Gateway
 # This stage builds the Warp API Gateway application using the .NET SDK
