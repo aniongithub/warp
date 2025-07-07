@@ -2,7 +2,6 @@ stages:
   - build
 
 variables:
-  DOCKER_DRIVER: overlay2
   DOCKER_TLS_CERTDIR: "/certs"
 
 .common_props:
@@ -12,7 +11,9 @@ variables:
 .build:
   image: docker:latest
   services:
-    - docker:dind
+    - name: docker:dind
+      command: ["--host=tcp://0.0.0.0:2375"]
+      privileged: true
 
 build-docker:
   stage: build
