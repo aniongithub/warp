@@ -39,5 +39,3 @@ build-and-test-docker:
     - docker rm warp-test || true
   rules:
     - if: $CI_COMMIT_BRANCH
-  tags:
-    - docker
