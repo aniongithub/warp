@@ -5,12 +5,38 @@ variables:
   DOCKER_DRIVER: overlay2
   DOCKER_TLS_CERTDIR: "/certs"
 
+.common_props:
+  before_script:
+    - for i in {1..20}; do [[ -f "${DOCKER_CERT_PATH}/ca.pem" ]] && docker info && break; sleep 3; done
+
+.build:
+  image: docker:latest
+  services:
+    - docker:dind
+
 build-docker:
   stage: build
+  extends:
+    - .build
+  variables:
+    SERVICE_NAME: warp
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+    DOCKER_TLS_VERIFY: 1
+  before_script:
+    - !reference [ .common_props, before_script ]
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
   script:
     - echo "Building Warp Docker container..."
-    - docker build -t warp:test -f Dockerfile .
-    - echo "Docker build completed successfully"
-    - docker images | grep warp
+    - docker context create builder
+    - docker buildx create builder --driver docker-container --use
+    - docker buildx build --push -t ${CI_REGISTRY_IMAGE}:${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}
+      --cache-to type=registry,ref=${CI_REGISTRY_IMAGE}/cache-image,mode=max
+      --cache-from type=registry,ref=${CI_REGISTRY_IMAGE}/cache-image
+      --network host -f Dockerfile .
+    - echo "Docker build and push completed successfully"
   rules:
-    - if: $CI_COMMIT_BRANCH
+    - if: '$CI_COMMIT_REF_NAME =~ /^(dev|testing|main|release.*)$/'
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: "$CI_COMMIT_TAG"
