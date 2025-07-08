@@ -9,11 +9,10 @@ variables:
     - for i in {1..20}; do [[ -f "${DOCKER_CERT_PATH}/ca.pem" ]] && docker info && break; sleep 3; done
 
 .build:
-  image: docker:latest
+  image: docker:27.4.1
   services:
-    - name: docker:dind
-      command: ["--host=tcp://0.0.0.0:2375"]
-      privileged: true
+    - name: docker:27.4.1-dind
+      command: ["--mtu=1200"]
 
 build-docker:
   stage: build
