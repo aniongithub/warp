@@ -1,0 +1,11 @@
+{
+  "$include:DataContext": "shared/datacontext.jsonc",
+  "$include:opentelemetry": "shared/opentelemetry.jsonc",
+  "Kestrel": {
+    "Endpoints": {
+      "Internal": {
+        "Url": "http://127.0.0.1:5002"
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+    "DataContext": {
+        // "Type": "Warp.Core.Data.Contexts.JsonDataContext, warp.core",
+        // "args": {
+        //     "filePath": "data/data.json"
+        // }
+
+        "Type": "Warp.Core.Data.Contexts.SqliteDataContext, warp.core",
+        "args": {
+            "filePath": "data/data.db"
+        }
+
+        // "Type": "Warp.Core.Data.Contexts.PostgreSqlDataContext, warp.core",
+        // "args": {
+        //   "connectionString": "Host=postgres;Port=5432;Database=warp;Username=warp;Password=warp_dev_password"
+        // }
+    }
+}

@@ -12,11 +12,17 @@ builder.Configuration.AddWarpConfiguration(assemblyName, clearExistingSources: t
 
 var dataContextSection = builder.Configuration.GetSection("DataContext");
 IDataContext dataContext;
-if (dataContextSection.Exists())
-    dataContext = dataContextSection.CreateFromConfiguration();
-else
-    // Fallback for CLI/Swagger generation: use a dummy or in-memory context
+
+// Check if we're running under swagger CLI
+bool isSwaggerGeneration = Environment.GetCommandLineArgs().Any(arg => arg.Contains("swagger")) ||
+                          Environment.GetCommandLineArgs().Any(arg => arg.Contains("tofile")) ||
+                          Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") == "SwaggerGeneration";
+
+if (isSwaggerGeneration || !dataContextSection.Exists()) // Fallback for CLI/Swagger generation: use a dummy context
     dataContext = new Warp.Core.Data.Contexts.JsonDataContext("swagger-dummy.json");
+else
+    dataContext = dataContextSection.CreateFromConfiguration();
+
 builder.Services.AddSingleton(dataContext);
 
 // Add services to the container.
