@@ -118,19 +118,33 @@ This repository includes pre-configured launch settings for development and debu
 You can select these compound configurations from the VS Code Run/Debug panel to start all related services at once. This also means you can use a single VS code window to debug flow all the way from the developer console to the middleware in your API gateway seamlessly.
 
 ### **Test the API**
+
 Ensure that the "Warp API Gateway" launch configuration is active before testing and then run any of the scripts under `scripts/tests`.
 
 These scripts will:
- - Prompt you to login to Google (`google-login.sh`)
- - Use the JWT to fetch a WARP API key for your username (`get-api-key.sh`)
- - Use the WARP API key to perform a search using the Star Trek API for "the best of both worlds" (`the-best-of-both-worlds.sh`)
+
+- Prompt you to login to Google (`google-login.sh`)
+- Use the JWT to fetch a WARP API key for your username (`get-api-key.sh`)
+- Use the WARP API key to perform a search using the Star Trek API for "the best of both worlds" (`the-best-of-both-worlds.sh`)
 
 You can use the OpenAPI specs in
- - `spec/stapi.yaml` 
- - `warp.apis.admin.yml`
- - `warp.apis.developer.yml`
+
+- `spec/stapi.yaml`
+- `warp.apis.admin.yml`
+- `warp.apis.developer.yml`
 
 to formulate additional commands for testing different functionalities of Warp or your API.
+
+### DataContexts
+
+Warp supports a variety of backends for persistence of its middleware data to deal with users, quotas, rates and API keys. These are:
+
+- **Json file** - This is not meant for production use and simply uses a JSON file to store all data.
+- **Sqlite** - This can be used for single-instance API gateways in small-scale deployments as there is no scalable, efficient way to share a single sqlite Db across multiple nodes.
+- **PostgreSQL** - This DataContext implementation connects to a PostgreSQL instance using an Npgsql-type connection string. In order to enable this, please make the appropriate changes to `.devcontainer/docker-compose-dev.yml` and `config/shared/datacontext.jsonc` and rebuild the devcontainer.
+- **Firestore** - This DataContext implementation connects to a Firestore instance (or, for local development a Firestore emulator). In order to enable this, please make the appropriate changes to `.devcontainer/docker-compose-dev.yml` and `config/shared/datacontext.jsonc` and rebuild the devcontainer.
+
+Note: Changes to local configurations used for testing PostgreSQL and Firestore should not be committed to git, but only used locally.
 
 ## Contributing
 
