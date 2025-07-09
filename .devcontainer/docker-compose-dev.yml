@@ -15,7 +15,13 @@ services:
     working_dir: /workspace/warp
     depends_on:
       - otel-collector
-      - postgres
+      
+      # Uncomment the specific database containers you want to use
+      # for development. 
+      # By default, warp is configured to use Sqlite
+      # which doesn't require a separate container.
+      # - postgres
+      # - firestore
     networks:
       - warp-network
 
@@ -39,6 +45,7 @@ services:
     networks:
       - warp-network
 
+
   postgres:
     image: postgres:15
     user: "1000:1000"
@@ -49,6 +56,16 @@ services:
       PGUSER: vscode
     volumes:
       - ../data/postgres:/var/lib/postgresql/data
+    networks:
+      - warp-network
+
+  firestore:
+    build:
+      context: .
+      dockerfile: firestore.Dockerfile
+    ports:
+      - "8080:8080"  # Firestore emulator UI
+      - "4000:4000"  # Firestore Web UI
     networks:
       - warp-network
 
