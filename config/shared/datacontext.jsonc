@@ -14,5 +14,10 @@
         // "args": {
         //   "connectionString": "Host=postgres;Port=5432;Database=warp;Username=warp;Password=warp_dev_password"
         // }
+
+        // "Type": "Warp.Core.Data.Contexts.FirestoreDataContext, warp.core",
+        // "args": {
+        //   "projectId": "firestore"
+        // }
     }
 }
