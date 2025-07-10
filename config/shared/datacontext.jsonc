@@ -12,12 +12,12 @@
 
         // "Type": "Warp.Core.Data.Contexts.PostgreSqlDataContext, warp.core",
         // "args": {
-        //   "connectionString": "Host=postgres;Port=5432;Database=warp;Username=warp;Password=warp_dev_password"
+        //   "connectionString": "${POSTGRESQL_CONNECTION_STRING}"
         // }
 
         // "Type": "Warp.Core.Data.Contexts.FirestoreDataContext, warp.core",
         // "args": {
-        //   "projectId": "firestore"
+        //   "projectId": "${FIRESTORE_PROJECT_ID}"
         // }
     }
 }
