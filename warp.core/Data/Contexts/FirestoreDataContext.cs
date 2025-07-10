@@ -1,11 +1,8 @@
 using System.Linq.Expressions;
 using FirebaseAdmin;
-using FirebaseAdmin.Auth;
 using Google.Cloud.Firestore;
 using Google.Cloud.Firestore.V1;
-using Google.Api.Gax.Grpc;
 using Grpc.Core;
-using System.Text.Json;
 
 namespace Warp.Core.Data.Contexts;
 
@@ -46,19 +43,34 @@ public class FirestoreDataContext : IDataContext
             {
                 Console.WriteLine("Connecting to Firestore in production mode");
 
-                // For cloud, use default authentication (equivalent to Python's firebase_admin.initialize_app())
-                if (FirebaseApp.DefaultInstance == null)
+                // For cloud, try to use Google Cloud credentials
+                try
                 {
-                    var app = FirebaseApp.Create(new AppOptions()
-                    {
-                        ProjectId = projectId
-                    });
-                    Console.WriteLine($"Firebase Admin initialized for production project: {projectId}");
+                    // Use Google.Cloud.Firestore directly which handles GCP authentication automatically
+                    _db = FirestoreDb.Create(projectId);
+                    Console.WriteLine($"Production Firestore database initialized successfully using default GCP credentials");
                 }
+                catch (Exception firestoreEx)
+                {
+                    Console.WriteLine($"Direct Firestore connection failed: {firestoreEx.Message}");
+                    
+                    // Fallback: Try Firebase Admin SDK with explicit credential handling
+                    if (FirebaseApp.DefaultInstance == null)
+                    {
+                        var appOptions = new AppOptions()
+                        {
+                            ProjectId = projectId
+                        };
+                        
+                        // Let Firebase Admin SDK use default credentials (service account key, metadata server, etc.)
+                        var app = FirebaseApp.Create(appOptions);
+                        Console.WriteLine($"Firebase Admin initialized for production project: {projectId}");
+                    }
 
-                // Get Firestore instance for production
-                _db = FirestoreDb.Create(projectId);
-                Console.WriteLine($"Production Firestore database initialized successfully");
+                    // Try again with Firebase Admin
+                    _db = FirestoreDb.Create(projectId);
+                    Console.WriteLine($"Production Firestore database initialized via Firebase Admin SDK");
+                }
             }
         }
         catch (Exception ex)
