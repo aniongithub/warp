@@ -18,69 +18,106 @@ public class PostgreSqlDataContext : IDataContext
 
     private void InitializeDatabase()
     {
-        // First, connect without specifying a database to create it if it doesn't exist
+        try
+        {
+            // Try to connect directly to the target database first
+            using var conn = new NpgsqlConnection(_connectionString);
+            conn.Open();
+            CreateTables(conn);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "3D000") // Database does not exist
+        {
+            // Only try to create database if it doesn't exist
+            CreateDatabaseIfNotExists();
+            
+            // Connect again and create tables
+            using var conn = new NpgsqlConnection(_connectionString);
+            conn.Open();
+            CreateTables(conn);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Failed to initialize database: {ex.Message}", ex);
+        }
+    }
+
+    private void CreateDatabaseIfNotExists()
+    {
         var builder = new NpgsqlConnectionStringBuilder(_connectionString);
         var databaseName = builder.Database;
         
-        // Connect to the default 'postgres' database to create our target database
+        if (string.IsNullOrEmpty(databaseName))
+        {
+            throw new InvalidOperationException("Database name is required in connection string");
+        }
+        
+        // Connect to the maintenance database to check/create target database
         builder.Database = "postgres";
         var adminConnectionString = builder.ToString();
         
-        using (var adminConn = new NpgsqlConnection(adminConnectionString))
-        {
-            adminConn.Open();
-            var checkDbCmd = adminConn.CreateCommand();
-            checkDbCmd.CommandText = $"SELECT 1 FROM pg_database WHERE datname = '{databaseName}'";
-            var dbExists = checkDbCmd.ExecuteScalar() != null;
-            
-            if (!dbExists)
-            {
-                var createDbCmd = adminConn.CreateCommand();
-                createDbCmd.CommandText = $"CREATE DATABASE \"{databaseName}\"";
-                createDbCmd.ExecuteNonQuery();
-            }
-        }
+        using var adminConn = new NpgsqlConnection(adminConnectionString);
+        adminConn.Open();
         
-        // Now connect to the target database and create tables
-        using var conn = new NpgsqlConnection(_connectionString);
-        conn.Open();
-        var cmd = conn.CreateCommand();
-        cmd.CommandText = @"
-        CREATE TABLE IF NOT EXISTS Users (
-            Id TEXT PRIMARY KEY,
-            Email TEXT,
-            Permissions TEXT
-        );
-        CREATE TABLE IF NOT EXISTS ApiKeys (
-            Id TEXT PRIMARY KEY,
-            Key TEXT,
-            Owner TEXT,
-            IsActive BOOLEAN,
-            Permissions TEXT,
-            RateLimitHz REAL
-        );
-        CREATE TABLE IF NOT EXISTS Requests (
-            Id TEXT PRIMARY KEY,
-            Key TEXT,
-            LastUsed TIMESTAMP,
-            LastRate REAL
-        );
-        CREATE TABLE IF NOT EXISTS Events (
-            Id TEXT PRIMARY KEY,
-            Key TEXT,
-            EventType TEXT,
-            Timestamp TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS Quotas (
-            Id TEXT PRIMARY KEY,
-            Key TEXT,
-            QuotaName TEXT,
-            Used REAL,
-            QuotaLimit REAL,
-            Type TEXT
-        );
-        ";
-        cmd.ExecuteNonQuery();
+        // Check if database exists
+        using var checkDbCmd = adminConn.CreateCommand();
+        checkDbCmd.CommandText = "SELECT 1 FROM pg_database WHERE datname = @dbname";
+        checkDbCmd.Parameters.AddWithValue("@dbname", databaseName);
+        var dbExists = checkDbCmd.ExecuteScalar() != null;
+        
+        if (!dbExists)
+        {
+            // Create database if it doesn't exist
+            using var createDbCmd = adminConn.CreateCommand();
+            createDbCmd.CommandText = $"CREATE DATABASE \"{databaseName}\"";
+            createDbCmd.ExecuteNonQuery();
+        }
+    }
+
+    private void CreateTables(NpgsqlConnection conn)
+    {
+        var tableCreationCommands = new[]
+        {
+            @"CREATE TABLE IF NOT EXISTS Users (
+                Id TEXT PRIMARY KEY,
+                Email TEXT,
+                Permissions TEXT
+            )",
+            @"CREATE TABLE IF NOT EXISTS ApiKeys (
+                Id TEXT PRIMARY KEY,
+                Key TEXT,
+                Owner TEXT,
+                IsActive BOOLEAN,
+                Permissions TEXT,
+                RateLimitHz REAL
+            )",
+            @"CREATE TABLE IF NOT EXISTS Requests (
+                Id TEXT PRIMARY KEY,
+                Key TEXT,
+                LastUsed TIMESTAMP,
+                LastRate REAL
+            )",
+            @"CREATE TABLE IF NOT EXISTS Events (
+                Id TEXT PRIMARY KEY,
+                Key TEXT,
+                EventType TEXT,
+                Timestamp TIMESTAMP
+            )",
+            @"CREATE TABLE IF NOT EXISTS Quotas (
+                Id TEXT PRIMARY KEY,
+                Key TEXT,
+                QuotaName TEXT,
+                Used REAL,
+                QuotaLimit REAL,
+                Type TEXT
+            )"
+        };
+
+        foreach (var commandText in tableCreationCommands)
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = commandText;
+            cmd.ExecuteNonQuery();
+        }
     }
         
     public IQueryable<IUser> Users => GetUsers().AsQueryable();

@@ -66,8 +66,7 @@ public static class ConfigurationExtensions
 
         if (jsonNode is JsonObject rootObject)
         {
-            ProcessIncludes(rootObject, baseDirectory);
-            ProcessEnvironmentVariables(rootObject);
+            ProcessConfigurationRecursively(rootObject, baseDirectory);
         }
 
         return jsonNode?.ToJsonString(new JsonSerializerOptions 
@@ -76,9 +75,34 @@ public static class ConfigurationExtensions
         }) ?? "{}";
     }
 
-    private static void ProcessIncludes(JsonObject jsonObject, string baseDirectory)
+    private static void ProcessConfigurationRecursively(JsonObject jsonObject, string baseDirectory, int maxIterations = 10)
+    {
+        for (int iteration = 0; iteration < maxIterations; iteration++)
+        {
+            bool hasChanges = false;
+
+            // First pass: Process environment variables (so they can be used in include paths)
+            hasChanges |= ProcessEnvironmentVariables(jsonObject);
+
+            // Second pass: Process includes (which may introduce new env vars to process)
+            hasChanges |= ProcessIncludes(jsonObject, baseDirectory);
+
+            // If no changes were made in this iteration, we're done
+            if (!hasChanges)
+                break;
+
+            // If we've reached max iterations, warn but continue
+            if (iteration == maxIterations - 1)
+            {
+                Console.WriteLine($"Warning: Maximum iterations ({maxIterations}) reached during configuration processing. Some environment variables or includes may not be fully resolved.");
+            }
+        }
+    }
+
+    private static bool ProcessIncludes(JsonObject jsonObject, string baseDirectory)
     {
         var includesToProcess = new List<(string key, string includePath)>();
+        bool hasChanges = false;
 
         // Find all include directives
         foreach (var kvp in jsonObject.ToArray())
@@ -93,7 +117,7 @@ public static class ConfigurationExtensions
             }
             else if (kvp.Value is JsonObject nestedObject)
             {
-                ProcessIncludes(nestedObject, baseDirectory);
+                hasChanges |= ProcessIncludes(nestedObject, baseDirectory);
             }
         }
 
@@ -118,7 +142,7 @@ public static class ConfigurationExtensions
 
                 if (includeNode is JsonObject includeObject)
                 {
-                    // Process nested includes in the included file
+                    // Process nested includes in the included file recursively
                     ProcessIncludes(includeObject, baseDirectory);
 
                     // Merge the included configuration
@@ -126,18 +150,23 @@ public static class ConfigurationExtensions
                     {
                         jsonObject[includeKvp.Key] = includeKvp.Value?.DeepClone();
                     }
+                    hasChanges = true;
                 }
             }
 
             // Remove the include directive
             jsonObject.Remove(key);
+            hasChanges = true;
         }
+
+        return hasChanges;
     }
 
-    private static void ProcessEnvironmentVariables(JsonObject jsonObject)
+    private static bool ProcessEnvironmentVariables(JsonObject jsonObject)
     {
         // Regex to match ${VAR_NAME} or ${VAR_NAME:default_value} patterns
-        var envVarRegex = new Regex(@"\$\{([A-Za-z_][A-ZaZ0-9_]*?)(?::([^}]*))?\}", RegexOptions.Compiled);
+        var envVarRegex = new Regex(@"\$\{([A-Za-z_][A-Za-z0-9_]*?)(?::([^}]*))?\}", RegexOptions.Compiled);
+        bool hasChanges = false;
 
         foreach (var kvp in jsonObject.ToArray())
         {
@@ -156,22 +185,26 @@ public static class ConfigurationExtensions
                     });
                     
                     jsonObject[kvp.Key] = JsonValue.Create(interpolatedValue);
+                    hasChanges = true;
                 }
             }
             else if (kvp.Value is JsonObject nestedObject)
             {
-                ProcessEnvironmentVariables(nestedObject);
+                hasChanges |= ProcessEnvironmentVariables(nestedObject);
             }
             else if (kvp.Value is JsonArray jsonArray)
             {
-                ProcessEnvironmentVariablesInArray(jsonArray);
+                hasChanges |= ProcessEnvironmentVariablesInArray(jsonArray);
             }
         }
+
+        return hasChanges;
     }
 
-    private static void ProcessEnvironmentVariablesInArray(JsonArray jsonArray)
+    private static bool ProcessEnvironmentVariablesInArray(JsonArray jsonArray)
     {
-        var envVarRegex = new Regex(@"\$\{([A-Za-z_][A-ZaZ0-9_]*?)(?::([^}]*))?\}", RegexOptions.Compiled);
+        var envVarRegex = new Regex(@"\$\{([A-Za-z_][A-Za-z0-9_]*?)(?::([^}]*))?\}", RegexOptions.Compiled);
+        bool hasChanges = false;
 
         for (int i = 0; i < jsonArray.Count; i++)
         {
@@ -192,16 +225,19 @@ public static class ConfigurationExtensions
                     });
                     
                     jsonArray[i] = JsonValue.Create(interpolatedValue);
+                    hasChanges = true;
                 }
             }
             else if (item is JsonObject nestedObject)
             {
-                ProcessEnvironmentVariables(nestedObject);
+                hasChanges |= ProcessEnvironmentVariables(nestedObject);
             }
             else if (item is JsonArray nestedArray)
             {
-                ProcessEnvironmentVariablesInArray(nestedArray);
+                hasChanges |= ProcessEnvironmentVariablesInArray(nestedArray);
             }
         }
+
+        return hasChanges;
     }
 }
