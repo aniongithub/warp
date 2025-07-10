@@ -3,6 +3,7 @@ namespace Warp.Core.Helper;
 using Microsoft.Extensions.Configuration;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 public static class ConfigurationExtensions
 {
@@ -66,6 +67,7 @@ public static class ConfigurationExtensions
         if (jsonNode is JsonObject rootObject)
         {
             ProcessIncludes(rootObject, baseDirectory);
+            ProcessEnvironmentVariables(rootObject);
         }
 
         return jsonNode?.ToJsonString(new JsonSerializerOptions 
@@ -129,6 +131,77 @@ public static class ConfigurationExtensions
 
             // Remove the include directive
             jsonObject.Remove(key);
+        }
+    }
+
+    private static void ProcessEnvironmentVariables(JsonObject jsonObject)
+    {
+        // Regex to match ${VAR_NAME} or ${VAR_NAME:default_value} patterns
+        var envVarRegex = new Regex(@"\$\{([A-Za-z_][A-ZaZ0-9_]*?)(?::([^}]*))?\}", RegexOptions.Compiled);
+
+        foreach (var kvp in jsonObject.ToArray())
+        {
+            if (kvp.Value is JsonValue jsonValue)
+            {
+                var stringValue = jsonValue.ToString();
+                if (envVarRegex.IsMatch(stringValue))
+                {
+                    var interpolatedValue = envVarRegex.Replace(stringValue, match =>
+                    {
+                        var varName = match.Groups[1].Value;
+                        var defaultValue = match.Groups[2].Success ? match.Groups[2].Value : string.Empty;
+                        
+                        var envValue = Environment.GetEnvironmentVariable(varName);
+                        return envValue ?? defaultValue;
+                    });
+                    
+                    jsonObject[kvp.Key] = JsonValue.Create(interpolatedValue);
+                }
+            }
+            else if (kvp.Value is JsonObject nestedObject)
+            {
+                ProcessEnvironmentVariables(nestedObject);
+            }
+            else if (kvp.Value is JsonArray jsonArray)
+            {
+                ProcessEnvironmentVariablesInArray(jsonArray);
+            }
+        }
+    }
+
+    private static void ProcessEnvironmentVariablesInArray(JsonArray jsonArray)
+    {
+        var envVarRegex = new Regex(@"\$\{([A-Za-z_][A-ZaZ0-9_]*?)(?::([^}]*))?\}", RegexOptions.Compiled);
+
+        for (int i = 0; i < jsonArray.Count; i++)
+        {
+            var item = jsonArray[i];
+            
+            if (item is JsonValue jsonValue)
+            {
+                var stringValue = jsonValue.ToString();
+                if (envVarRegex.IsMatch(stringValue))
+                {
+                    var interpolatedValue = envVarRegex.Replace(stringValue, match =>
+                    {
+                        var varName = match.Groups[1].Value;
+                        var defaultValue = match.Groups[2].Success ? match.Groups[2].Value : string.Empty;
+                        
+                        var envValue = Environment.GetEnvironmentVariable(varName);
+                        return envValue ?? defaultValue;
+                    });
+                    
+                    jsonArray[i] = JsonValue.Create(interpolatedValue);
+                }
+            }
+            else if (item is JsonObject nestedObject)
+            {
+                ProcessEnvironmentVariables(nestedObject);
+            }
+            else if (item is JsonArray nestedArray)
+            {
+                ProcessEnvironmentVariablesInArray(nestedArray);
+            }
         }
     }
 }
