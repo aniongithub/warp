@@ -1,5 +1,5 @@
 {
-  "$include:datacontext": "shared/datacontext.jsonc",  
+  "$include:datacontext": "shared/${DATACONTEXT_IMPL}-datacontext.jsonc",
   "$include:opentelemetry": "shared/opentelemetry.jsonc",
   
   "ReverseProxy": {
