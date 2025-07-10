@@ -1,5 +1,5 @@
 {
   "OpenTelemetry": {
-    "Endpoint": "http://otel-collector:4317"
+    "Endpoint": "${OTEL_ENDPOINT}"
   }
 }
