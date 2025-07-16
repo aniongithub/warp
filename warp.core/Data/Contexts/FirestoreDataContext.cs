@@ -81,17 +81,19 @@ public class FirestoreDataContext : IDataContext
         }
     }
 
-    public IQueryable<IUser> Users => GetUsersAsync().Result.AsQueryable();
-    public IQueryable<IApiKey> ApiKeys => GetApiKeysAsync().Result.AsQueryable();
-    public IQueryable<IRequest> Requests => GetRequestsAsync().Result.AsQueryable();
-    public IQueryable<IQuota> Quotas => GetQuotasAsync().Result.AsQueryable();
+    public IQueryable<IUser> Users => GetUsersAsync().GetAwaiter().GetResult().AsQueryable();
+    public IQueryable<IApiKey> ApiKeys => GetApiKeysAsync().GetAwaiter().GetResult().AsQueryable();
+    public IQueryable<IRequest> Requests => GetRequestsAsync().GetAwaiter().GetResult().AsQueryable();
+    public IQueryable<IQuota> Quotas => GetQuotasAsync().GetAwaiter().GetResult().AsQueryable();
 
     private async Task<List<IUser>> GetUsersAsync()
     {
         var users = new List<IUser>();
         try
         {
+            Console.WriteLine("Attempting to query users collection...");
             var snapshot = await _db.Collection("users").GetSnapshotAsync();
+            Console.WriteLine($"Successfully retrieved {snapshot.Count} user documents");
             
             foreach (var document in snapshot.Documents)
             {
@@ -107,10 +109,26 @@ public class FirestoreDataContext : IDataContext
                 }
             }
         }
+        catch (RpcException rpcEx)
+        {
+            Console.WriteLine($"Firestore RPC Error in GetUsersAsync: {rpcEx.StatusCode} - {rpcEx.Status.Detail}");
+            Console.WriteLine($"This is likely a Firestore security rules issue or authentication problem.");
+            Console.WriteLine($"Stack trace: {rpcEx.StackTrace}");
+            
+            // Check if we're in emulator mode
+            var emulatorHost = Environment.GetEnvironmentVariable("FIRESTORE_EMULATOR_HOST");
+            if (string.IsNullOrEmpty(emulatorHost))
+            {
+                Console.WriteLine("Running in production mode - check your Firestore security rules and authentication.");
+                Console.WriteLine("Consider setting FIRESTORE_EMULATOR_HOST for local development.");
+            }
+            throw;
+        }
         catch (Exception ex)
         {
             Console.WriteLine($"Error in GetUsersAsync: {ex.Message}");
             Console.WriteLine($"Stack trace: {ex.StackTrace}");
+            throw;
         }
         return users;
     }
@@ -120,7 +138,9 @@ public class FirestoreDataContext : IDataContext
         var keys = new List<IApiKey>();
         try
         {
+            Console.WriteLine("Attempting to query apikeys collection...");
             var snapshot = await _db.Collection("apikeys").GetSnapshotAsync();
+            Console.WriteLine($"Successfully retrieved {snapshot.Count} apikey documents");
             
             foreach (var document in snapshot.Documents)
             {
@@ -139,10 +159,17 @@ public class FirestoreDataContext : IDataContext
                 }
             }
         }
+        catch (RpcException rpcEx)
+        {
+            Console.WriteLine($"Firestore RPC Error in GetApiKeysAsync: {rpcEx.StatusCode} - {rpcEx.Status.Detail}");
+            Console.WriteLine($"This is likely a Firestore security rules issue or authentication problem.");
+            throw;
+        }
         catch (Exception ex)
         {
             Console.WriteLine($"Error in GetApiKeysAsync: {ex.Message}");
             Console.WriteLine($"Stack trace: {ex.StackTrace}");
+            throw;
         }
         return keys;
     }
