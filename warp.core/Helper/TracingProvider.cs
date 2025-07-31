@@ -1,4 +1,4 @@
-namespace Warp.Middleware;
+namespace Warp.Core.Helper;
 
 public abstract class TracingProvider : IDisposable
 {

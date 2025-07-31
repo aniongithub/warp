@@ -5,6 +5,7 @@ using Microsoft.OpenApi;
 using System.Text.Json;
 
 using Warp.Core.Data;
+using Warp.Core.Middleware;
 
 namespace Warp.Middleware;
 

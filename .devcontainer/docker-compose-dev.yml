@@ -20,6 +20,7 @@ services:
       # and pick the one we want to use in the .env file      
       - postgres
       - firestore
+      - redis
     networks:
       - warp-network
 
@@ -43,6 +44,13 @@ services:
     networks:
       - warp-network
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - ./data/redis:/data
+    networks:
+      - warp-network
 
   postgres:
     image: postgres:16.4

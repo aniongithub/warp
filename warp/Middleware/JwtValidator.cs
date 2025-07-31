@@ -5,6 +5,7 @@ using Microsoft.IdentityModel.Tokens;
 
 using Warp.Core.Data;
 using Warp.Core.Helper;
+using Warp.Core.Middleware;
 
 namespace Warp.Middleware;
 

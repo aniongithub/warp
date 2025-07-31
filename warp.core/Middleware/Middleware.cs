@@ -1,17 +1,10 @@
-// // Middleware with no configuration
-// public interface IMiddleware
-// {
-// }
-
-// // Middleware with strongly-typed configuration
-// public interface IMiddleware<TConfig>: IMiddleware
-// {
-//     void Configure(TConfig options);
-// }
-
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Warp.Core.Data;
+using Warp.Core.Helper;
 
-namespace Warp.Middleware;
+namespace Warp.Core.Middleware;
 
 public class MiddlewareOptions
 {
@@ -27,10 +20,6 @@ public abstract class MiddlewareBase<TOptions>
     protected ILogger Logger { get; }
     protected TracingProvider _tracingProvider = default!;
     protected IDataContext DataContext { get; }
-
-    // => Options.TracingEnabled && Options.TracingProvider != null
-    // ? (TracingProvider)Activator.CreateInstance(Type.GetType(Options.TracingProvider)!)
-    // : null;
 
     protected MiddlewareBase(string name, ILogger logger, IDataContext context, TOptions options)
     {
@@ -74,7 +63,7 @@ public abstract class MiddlewareBase<TOptions>
     public string Name { get; }
 }
 
-internal class MiddlewareDescriptor
+public class MiddlewareDescriptor
 {
     public string Name { get; set; } = "";
     public string Type { get; set; } = "";

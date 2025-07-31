@@ -3,6 +3,7 @@ using OpenTelemetry.Resources;
 
 using Warp;
 using Warp.Core.Data;
+using Warp.Core.Middleware;
 using Warp.Core.Helper;
 using Warp.Middleware;
 using System.Diagnostics;
