@@ -1,6 +1,7 @@
 namespace Warp.Middleware;
 
 using Warp.Core.Data;
+using Warp.Core.Middleware;
 
 public class RateLimiterOptions : MiddlewareOptions
 {

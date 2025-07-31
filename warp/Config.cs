@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+﻿using Warp.Core.Helper;
 
 namespace Warp;
 
@@ -13,8 +13,8 @@ internal class RouteDescriptor
     public string? TracingProvider { get; set; }
     public string? TraceName { get; set; }
 
-    private Warp.Middleware.TracingProvider? _tracingProviderInstance;
-    public Warp.Middleware.TracingProvider? TracingProviderInstance => _tracingProviderInstance;
+    private TracingProvider? _tracingProviderInstance;
+    public TracingProvider? TracingProviderInstance => _tracingProviderInstance;
     private bool _initialized = false;
     public bool Initialized => _initialized;
     public void Initialize()
@@ -24,7 +24,7 @@ internal class RouteDescriptor
             var providerType = Type.GetType(TracingProvider);
             if (providerType != null)
             {
-                _tracingProviderInstance = (Warp.Middleware.TracingProvider?)Activator.CreateInstance(providerType, TraceName ?? $"{Cluster}.{Path}");
+                _tracingProviderInstance = (TracingProvider?)Activator.CreateInstance(providerType, TraceName ?? $"{Cluster}.{Path}");
             }
         }
         _initialized = true;

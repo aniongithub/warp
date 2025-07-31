@@ -4,6 +4,7 @@ using OpenTelemetry;
 using OpenTelemetry.Context.Propagation;
 
 using Warp.Core.Data;
+using Warp.Core.Middleware;
 
 namespace Warp.Middleware;
 
