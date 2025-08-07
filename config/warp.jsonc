@@ -26,8 +26,8 @@
         }
       },
 
-      "stapi_pro": {
-        "ClusterId": "stapi_cluster",
+      "memoryalpha_pro": {
+        "ClusterId": "memoryalpha_cluster",
         "Match": {
           "Path": "/api/pro/{**catch-all}"
         },
@@ -37,12 +37,12 @@
         ],
         "Metadata": {
           "Preprocess": "OpenTelemetryStart,ApiKeyValidator,ProRateLimiter,ProQuotaChecker",
-          "Predispatch": "StapiOpenApiValidator",
+          "Predispatch": "MemoryAlphaOpenApiValidator",
           "Postprocess": "OpenTelemetryEnd"
         }
       },
-      "stapi_basic": {
-        "ClusterId": "stapi_cluster",
+      "memoryalpha_basic": {
+        "ClusterId": "memoryalpha_cluster",
         "Match": {
           "Path": "/api/basic/{**catch-all}"
         },
@@ -52,7 +52,7 @@
         ],
         "Metadata": {
           "Preprocess": "OpenTelemetryStart,ApiKeyValidator,BasicRateLimiter,BasicQuotaChecker",
-          "Predispatch": "StapiOpenApiValidator",
+          "Predispatch": "MemoryAlphaOpenApiValidator",
           "Postprocess": "OpenTelemetryEnd"
         }
       }
@@ -72,10 +72,10 @@
           }
         }
       },
-      "stapi_cluster": {
+      "memoryalpha_cluster": {
         "Destinations": {
-          "stapi": {
-            "Address": "https://stapi.co/api/"
+          "memoryalpha": {
+            "Address": "http://memoryalpha-rag-api:8000"
           }
         }
       }
@@ -149,10 +149,10 @@
       }
     },
     {
-      "Name": "StapiOpenApiValidator",
+      "Name": "MemoryAlphaOpenApiValidator",
       "Type": "Warp.Middleware.OpenApiValidator, warp",
       "Options": {
-        "SpecFile": "spec/stapi.yaml"
+        "SpecFile": "spec/memoryalpha-rag-api-spec.json"
       }
     },
     {

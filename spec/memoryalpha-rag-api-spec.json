@@ -1,0 +1,275 @@
+{
+    "openapi": "3.0.3",
+    "info": {
+        "title": "FastAPI",
+        "version": "0.1.0"
+    },
+    "paths": {
+        "/memoryalpha/health": {
+            "get": {
+                "summary": "Health Check",
+                "operationId": "health_check_memoryalpha_health_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/memoryalpha/rag/stream": {
+            "get": {
+                "summary": "Stream Endpoint",
+                "description": "Query the RAG pipeline and return streaming response chunks.",
+                "operationId": "stream_endpoint_memoryalpha_rag_stream_get",
+                "parameters": [
+                    {
+                        "name": "question",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "description": "The user question",
+                            "title": "Question"
+                        },
+                        "description": "The user question"
+                    },
+                    {
+                        "name": "thinkingmode",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "description": "Thinking mode: DISABLED, QUIET, or VERBOSE",
+                            "default": "DISABLED",
+                            "title": "Thinkingmode"
+                        },
+                        "description": "Thinking mode: DISABLED, QUIET, or VERBOSE"
+                    },
+                    {
+                        "name": "max_tokens",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "description": "Maximum tokens to generate",
+                            "default": 2048,
+                            "title": "Max Tokens"
+                        },
+                        "description": "Maximum tokens to generate"
+                    },
+                    {
+                        "name": "top_k",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "description": "Number of documents to retrieve",
+                            "default": 10,
+                            "title": "Top K"
+                        },
+                        "description": "Number of documents to retrieve"
+                    },
+                    {
+                        "name": "top_p",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "number",
+                            "description": "Sampling parameter",
+                            "default": 0.8,
+                            "title": "Top P"
+                        },
+                        "description": "Sampling parameter"
+                    },
+                    {
+                        "name": "temperature",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "number",
+                            "description": "Randomness/creativity of output",
+                            "default": 0.3,
+                            "title": "Temperature"
+                        },
+                        "description": "Randomness/creativity of output"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/memoryalpha/rag/ask": {
+            "get": {
+                "summary": "Ask Endpoint",
+                "description": "Query the RAG pipeline and return the full response (including thinking if enabled).",
+                "operationId": "ask_endpoint_memoryalpha_rag_ask_get",
+                "parameters": [
+                    {
+                        "name": "question",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "description": "The user question",
+                            "title": "Question"
+                        },
+                        "description": "The user question"
+                    },
+                    {
+                        "name": "thinkingmode",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "description": "Thinking mode: DISABLED, QUIET, or VERBOSE",
+                            "default": "DISABLED",
+                            "title": "Thinkingmode"
+                        },
+                        "description": "Thinking mode: DISABLED, QUIET, or VERBOSE"
+                    },
+                    {
+                        "name": "max_tokens",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "description": "Maximum tokens to generate",
+                            "default": 2048,
+                            "title": "Max Tokens"
+                        },
+                        "description": "Maximum tokens to generate"
+                    },
+                    {
+                        "name": "top_k",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "description": "Number of documents to retrieve",
+                            "default": 10,
+                            "title": "Top K"
+                        },
+                        "description": "Number of documents to retrieve"
+                    },
+                    {
+                        "name": "top_p",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "number",
+                            "description": "Sampling parameter",
+                            "default": 0.8,
+                            "title": "Top P"
+                        },
+                        "description": "Sampling parameter"
+                    },
+                    {
+                        "name": "temperature",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "number",
+                            "description": "Randomness/creativity of output",
+                            "default": 0.3,
+                            "title": "Temperature"
+                        },
+                        "description": "Randomness/creativity of output"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "HTTPValidationError": {
+                "properties": {
+                    "detail": {
+                        "items": {
+                            "$ref": "#/components/schemas/ValidationError"
+                        },
+                        "type": "array",
+                        "title": "Detail"
+                    }
+                },
+                "type": "object",
+                "title": "HTTPValidationError"
+            },
+            "ValidationError": {
+                "properties": {
+                    "loc": {
+                        "items": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "integer"
+                                }
+                            ]
+                        },
+                        "type": "array",
+                        "title": "Location"
+                    },
+                    "msg": {
+                        "type": "string",
+                        "title": "Message"
+                    },
+                    "type": {
+                        "type": "string",
+                        "title": "Error Type"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "loc",
+                    "msg",
+                    "type"
+                ],
+                "title": "ValidationError"
+            }
+        }
+    }
+}

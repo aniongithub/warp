@@ -1,4 +1,5 @@
 services:
+
   warp:
     build:
       context: ..
@@ -75,6 +76,39 @@ services:
     networks:
       - warp-network
 
+  memoryalpha-rag-api:
+    image: aniondocker/memoryalpha-rag-api
+    ports:
+      - "8000:8000"
+    networks:
+      - warp-network
+    depends_on:
+      - ollama
+    environment:
+      DEFAULT_MODEL: qwen3:0.6b
+      OLLAMA_URL: http://ollama:11434
+      DB_PATH: /data/enmemoryalpha_db
+    volumes:
+      - rag-cache:/root/.cache
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - warp-network
+    environment:
+      DEFAULT_MODEL: qwen3:0.6b
+    entrypoint: [
+      "/bin/bash", "-c",
+      "ollama serve & sleep 5; ollama pull \"$DEFAULT_MODEL\"; wait"
+    ]
 networks:
   warp-network:
     driver: bridge
+
+volumes:
+  rag-cache:
+  ollama-data:
