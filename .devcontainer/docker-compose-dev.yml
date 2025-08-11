@@ -77,7 +77,7 @@ services:
       - warp-network
 
   memoryalpha-rag-api:
-    image: aniondocker/memoryalpha-rag-api
+    image: aniondocker/memoryalpha-rag-api:v0.5.0
     ports:
       - "8000:8000"
     networks:
@@ -86,6 +86,7 @@ services:
       - ollama
     environment:
       DEFAULT_MODEL: qwen3:0.6b
+      DEFAULT_IMAGE_MODEL: qwen2.5vl:3b
       OLLAMA_URL: http://ollama:11434
       DB_PATH: /data/enmemoryalpha_db
     volumes:

@@ -21,106 +21,6 @@
                 }
             }
         },
-        "/memoryalpha/rag/stream": {
-            "get": {
-                "summary": "Stream Endpoint",
-                "description": "Query the RAG pipeline and return streaming response chunks.",
-                "operationId": "stream_endpoint_memoryalpha_rag_stream_get",
-                "parameters": [
-                    {
-                        "name": "question",
-                        "in": "query",
-                        "required": true,
-                        "schema": {
-                            "type": "string",
-                            "description": "The user question",
-                            "title": "Question"
-                        },
-                        "description": "The user question"
-                    },
-                    {
-                        "name": "thinkingmode",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "string",
-                            "description": "Thinking mode: DISABLED, QUIET, or VERBOSE",
-                            "default": "DISABLED",
-                            "title": "Thinkingmode"
-                        },
-                        "description": "Thinking mode: DISABLED, QUIET, or VERBOSE"
-                    },
-                    {
-                        "name": "max_tokens",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "integer",
-                            "description": "Maximum tokens to generate",
-                            "default": 2048,
-                            "title": "Max Tokens"
-                        },
-                        "description": "Maximum tokens to generate"
-                    },
-                    {
-                        "name": "top_k",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "integer",
-                            "description": "Number of documents to retrieve",
-                            "default": 10,
-                            "title": "Top K"
-                        },
-                        "description": "Number of documents to retrieve"
-                    },
-                    {
-                        "name": "top_p",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "number",
-                            "description": "Sampling parameter",
-                            "default": 0.8,
-                            "title": "Top P"
-                        },
-                        "description": "Sampling parameter"
-                    },
-                    {
-                        "name": "temperature",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "number",
-                            "description": "Randomness/creativity of output",
-                            "default": 0.3,
-                            "title": "Temperature"
-                        },
-                        "description": "Randomness/creativity of output"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Successful Response",
-                        "content": {
-                            "application/json": {
-                                "schema": {}
-                            }
-                        }
-                    },
-                    "422": {
-                        "description": "Validation Error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/HTTPValidationError"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
         "/memoryalpha/rag/ask": {
             "get": {
                 "summary": "Ask Endpoint",
@@ -220,10 +120,75 @@
                     }
                 }
             }
+        },
+        "/memoryalpha/rag/identify": {
+            "post": {
+                "summary": "Multimodal Image Search",
+                "description": "Accepts an image file upload, performs multimodal image search, and returns results.",
+                "operationId": "identify_endpoint_memoryalpha_rag_identify_post",
+                "parameters": [
+                    {
+                        "name": "top_k",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "description": "Number of results to return",
+                            "default": 5,
+                            "title": "Top K"
+                        },
+                        "description": "Number of results to return"
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Body_identify_endpoint_memoryalpha_rag_identify_post"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     },
     "components": {
         "schemas": {
+            "Body_identify_endpoint_memoryalpha_rag_identify_post": {
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "format": "binary",
+                        "title": "File"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "file"
+                ],
+                "title": "Body_identify_endpoint_memoryalpha_rag_identify_post"
+            },
             "HTTPValidationError": {
                 "properties": {
                     "detail": {

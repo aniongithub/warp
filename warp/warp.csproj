@@ -1,19 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <ItemGroup>
-    <PackageReference Include="AWSSDK.S3" Version="4.0.6.2" />
-    <PackageReference Include="Microsoft.OpenApi" Version="1.6.24" />
-    <PackageReference Include="Microsoft.OpenApi.Readers" Version="1.6.24" />
     <PackageReference Include="OpenTelemetry" Version="1.12.0" />
     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.12.0" />
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.12.0" />
     <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.12.0" />
     <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.12.0" />
-    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.11.0" />
     <PackageReference Include="Yarp.ReverseProxy" Version="2.3.0" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\warp.core\warp.core.csproj" />
-    <ProjectReference Include="..\warp.conduit\warp.conduit.csproj" />
+    <ProjectReference Include="..\warp.dilithium\warp.dilithium.csproj" />
   </ItemGroup>
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
