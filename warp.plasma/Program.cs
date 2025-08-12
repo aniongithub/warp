@@ -372,7 +372,7 @@ public class PlasmaEngine
             {
                 try
                 {
-                    var transform = CreateTransform(mapping.Transform);
+                    var transform = mapping.Transform.CreateTransform();
                     // Create a simple service provider - in production this would be injected
                     var services = new ServiceCollection().BuildServiceProvider();
                     var reversedValue = await transform.ReverseAsync(currentValue, services);
@@ -421,27 +421,5 @@ public class PlasmaEngine
             // Headers should be handled separately, but for now include in body
             parameters[source.Header] = value;
         }
-    }
-
-    private ITransform CreateTransform(TransformConfig transformConfig)
-    {
-        var transformType = Type.GetType(transformConfig.Type);
-        if (transformType == null)
-            throw new InvalidOperationException($"Transform type not found: {transformConfig.Type}");
-
-        var optionsType = transformType.BaseType?.GetGenericArguments().FirstOrDefault();
-        if (optionsType == null)
-            throw new InvalidOperationException($"Transform type {transformConfig.Type} does not have a parameterless constructor or options type");
-        var options = Activator.CreateInstance(optionsType);
-
-        // Copy all properties from the options dictionary to the options object
-        foreach (var kvp in transformConfig.Options)
-        {
-            var prop = optionsType.GetProperty(kvp.Key);
-            if (prop != null && prop.CanWrite)
-                prop.SetValue(options, Convert.ChangeType(kvp.Value.ToString(), prop.PropertyType));
-        }
-
-        return (ITransform)Activator.CreateInstance(transformType, options)!;
     }
 }

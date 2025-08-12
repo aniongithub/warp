@@ -23,13 +23,7 @@ public class InputMapping
     public InputSource From { get; set; } = new();
     public bool Required { get; set; } = false;
     public string? Default { get; set; }
-    public TransformConfig? Transform { get; set; }
-}
-
-public class TransformConfig
-{
-    public string Type { get; set; } = string.Empty;
-    public Dictionary<string, object?> Options { get; set; } = new();
+    public Warp.Core.Job.TransformConfig? Transform { get; set; }
 }
 
 public class InputSource
@@ -222,28 +216,6 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions> where
     protected abstract Task CancelJobAsync(string jobId, string userId);
 
     // Transform helper methods
-    private ITransform CreateTransform(TransformConfig transformConfig)
-    {
-        var transformType = Type.GetType(transformConfig.Type);
-        if (transformType == null)
-            throw new InvalidOperationException($"Transform type not found: {transformConfig.Type}");
-
-        var optionsType = transformType.BaseType?.GetGenericArguments().FirstOrDefault();
-        if (optionsType == null)
-            throw new InvalidOperationException($"Transform type {transformConfig.Type} does not have a parameterless constructor or options type");
-        var options = Activator.CreateInstance(optionsType);
-
-        // Copy all properties from the options dictionary to the options object
-        foreach (var kvp in transformConfig.Options)
-        {
-            var prop = optionsType.GetProperty(kvp.Key);
-            if (prop != null && prop.CanWrite)
-                prop.SetValue(options, Convert.ChangeType(kvp.Value, prop.PropertyType));
-        }
-
-        return (ITransform)Activator.CreateInstance(transformType, options)!;
-    }
-
     private Dictionary<string, ParameterMapping> BuildParameterMappings()
     {
         var mappings = new Dictionary<string, ParameterMapping>();
@@ -383,7 +355,7 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions> where
             // Apply transform if configured
             if (mapping.Transform != null && value != null)
             {
-                var transform = CreateTransform(mapping.Transform);
+                var transform = mapping.Transform.CreateTransform();
                 var transformedValue = await transform.ForwardAsync(value);
                 
                 extractedInputs[paramName] = transformedValue;
