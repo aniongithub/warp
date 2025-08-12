@@ -1,0 +1,37 @@
+{
+  // Warp Plasma Job Processor Configuration
+  // This file supports includes and environment variable interpolation
+  
+  "$include:clusters": "shared/clusters.jsonc",
+  
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft": "Warning",
+      "Microsoft.Hosting.Lifetime": "Information",
+      "Warp.Plasma": "Debug"
+    }
+  },
+  
+  // Job processing engine configuration
+  "PollingIntervalMs": 2000,
+  "MaxConcurrentJobs": 10,
+  "JobTimeoutMs": 300000,
+  "HttpTimeoutMs": 30000,
+  
+  // Redis connection settings
+  "Redis": {
+    "ConnectionString": "redis:6379",
+    "Database": 0,
+    "Channel": "memoryalpha"
+  },
+  
+  // Job processor behavior
+  "Processor": {
+    "EnableHealthCheck": true,
+    "HealthCheckIntervalMs": 30000,
+    "RetryFailedJobs": true,
+    "MaxRetryAttempts": 3,
+    "RetryDelayMs": 10000
+  }
+}

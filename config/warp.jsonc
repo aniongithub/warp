@@ -3,6 +3,9 @@
   "$include:opentelemetry": "shared/opentelemetry.jsonc",
   
   "ReverseProxy": {
+    
+    "$include:yarp-clusters": "shared/clusters.jsonc",
+    
     "Routes": {
       "admin": {
         "ClusterId": "admin_cluster",
@@ -26,8 +29,9 @@
         }
       },
 
-      "stapi_pro": {
-        "ClusterId": "stapi_cluster",
+      "memoryalpha_pro": {
+        "ClusterId": "memoryalpha_cluster",
+        "Timeout": "00:05:00",
         "Match": {
           "Path": "/api/pro/{**catch-all}"
         },
@@ -37,12 +41,32 @@
         ],
         "Metadata": {
           "Preprocess": "OpenTelemetryStart,ApiKeyValidator,ProRateLimiter,ProQuotaChecker",
-          "Predispatch": "StapiOpenApiValidator",
+          "Predispatch": "MemoryAlphaOpenApiValidator",
           "Postprocess": "OpenTelemetryEnd"
         }
       },
-      "stapi_basic": {
-        "ClusterId": "stapi_cluster",
+
+      "memoryalpha_pro_async": {
+        "ClusterId": "memoryalpha_cluster",
+        "Timeout": "00:05:00",
+        "Match": {
+          "Path": "async/api/pro/{**catch-all}"
+        },
+        "Transforms": [
+          { "PathRemovePrefix": "/async" },
+          { "PathRemovePrefix": "/api" },
+          { "PathRemovePrefix": "/pro" }
+        ],
+        "Metadata": {
+          "Preprocess": "OpenTelemetryStart,ApiKeyValidator,ProRateLimiter,ProQuotaChecker",
+          "Predispatch": "MemoryAlphaOpenApiValidator,RedisAsyncApiHandler",
+          "Postprocess": "OpenTelemetryEnd"
+        }
+
+      },
+
+      "memoryalpha_basic": {
+        "ClusterId": "memoryalpha_cluster",
         "Match": {
           "Path": "/api/basic/{**catch-all}"
         },
@@ -52,31 +76,8 @@
         ],
         "Metadata": {
           "Preprocess": "OpenTelemetryStart,ApiKeyValidator,BasicRateLimiter,BasicQuotaChecker",
-          "Predispatch": "StapiOpenApiValidator",
+          "Predispatch": "MemoryAlphaOpenApiValidator",
           "Postprocess": "OpenTelemetryEnd"
-        }
-      }
-    },
-    "Clusters": {
-      "admin_api_cluster": {
-        "Destinations": {
-          "admin": {
-            "Address": "http://127.0.0.1:5003/"
-          }
-        }
-      },
-      "developer_api_cluster": {
-        "Destinations": {
-          "developer": {
-            "Address": "http://127.0.0.1:5002/"
-          }
-        }
-      },
-      "stapi_cluster": {
-        "Destinations": {
-          "stapi": {
-            "Address": "https://stapi.co/api/"
-          }
         }
       }
     }
@@ -84,43 +85,43 @@
   "PipelineComponents": [
     {
       "Name": "OpenTelemetryStart",
-      "Type": "Warp.Middleware.OpenTelemetryStart, warp",
+      "Type": "Warp.Dilithium.Middleware.OpenTelemetryStart, warp.dilithium",
       "Options": {
         "tagHeaders": ["x-api-key", "x-request-id"]
       }
     },
     {
       "Name": "JwtValidator",
-      "Type": "Warp.Middleware.JwtValidator, warp",
+      "Type": "Warp.Dilithium.Middleware.JwtValidator, warp.dilithium",
       "Options": {
         "JwksUri": "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
       }
     },
     {
       "Name": "JwtRateLimiter",
-      "Type": "Warp.Middleware.RateLimiter, warp",
+      "Type": "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium",
       "Options": {
         "RateLimitHz": 2.0
       }
     },
     {
       "Name": "ApiKeyRateLimiter",
-      "Type": "Warp.Middleware.RateLimiter, warp",
+      "Type": "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium",
       "options": {
         "RateLimitHz": 2.0
       }
     },
     {
       "Name": "ApiKeyValidator",
-      "Type": "Warp.Middleware.ApiKeyValidator, warp"
+      "Type": "Warp.Dilithium.Middleware.ApiKeyValidator, warp.dilithium"
     },
     {
       "Name": "OpenTelemetryEnd",
-      "Type": "Warp.Middleware.OpenTelemetryEnd, warp"
+      "Type": "Warp.Dilithium.Middleware.OpenTelemetryEnd, warp.dilithium"
     },
     {
       "Name": "DevPermissionsChecker",
-      "Type": "Warp.Middleware.PermissionsChecker, warp",
+      "Type": "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium",
       "Options": {
         "RequiredPermissions": [ "developer" ],       
         "CreateUserIfNotFound": true,
@@ -129,49 +130,50 @@
     },
     {
       "Name": "AdminPermissionsChecker",
-      "Type": "Warp.Middleware.PermissionsChecker, warp",
+      "Type": "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium",
       "Options": {
         "RequiredPermissions": [ "admin" ]
       }
     },
     {
       "Name": "DevOpenApiValidator",
-      "Type": "Warp.Middleware.OpenApiValidator, warp",
+      "Type": "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium",
       "Options": {
         "SpecFile": "warp.apis.developer.yml"
       }
     },
     {
       "Name": "AdminOpenApiValidator",
-      "Type": "Warp.Middleware.OpenApiValidator, warp",
+      "Type": "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium",
       "Options": {
         "SpecFile": "warp.apis.admin.yml"
       }
     },
     {
-      "Name": "StapiOpenApiValidator",
-      "Type": "Warp.Middleware.OpenApiValidator, warp",
+      "Name": "MemoryAlphaOpenApiValidator",
+      "Type": "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium",
       "Options": {
-        "SpecFile": "spec/stapi.yaml"
+        "SpecFile": "spec/memoryalpha-rag-api-spec.json",
+        "ApplyOn": ["Sync", "AsyncSubmit"]
       }
     },
     {
       "Name": "ProRateLimiter",
-      "Type": "Warp.Middleware.RateLimiter, warp",
+      "Type": "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium",
       "Options": {
         "RateLimitHz": 10.0
       }
     },
     {
       "Name": "BasicRateLimiter",
-      "Type": "Warp.Middleware.RateLimiter, warp",
+      "Type": "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium",
       "Options": {
         "RateLimitHz": 2.0
       }
     },
     {
       "Name": "BasicQuotaChecker",
-      "Type": "Warp.Middleware.QuotaChecker, warp",
+      "Type": "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium",
       "Options": {
         "QuotaName": "basic_quota",
         "QuotaUsage": 1.0,
@@ -180,12 +182,38 @@
     },
     {
       "Name": "ProQuotaChecker",
-      "Type": "Warp.Middleware.QuotaChecker, warp",
+      "Type": "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium",
       "Options": {
         "QuotaName": "pro_quota",
         "QuotaUsage": 1.0,
         "QuotaType": "postpaid",
         "CreateQuotaIfNotFound": true
+      }
+    },
+    {
+      "Name": "RedisAsyncApiHandler",
+      "Type": "Warp.Dilithium.Middleware.RedisAsyncApiHandler, warp.dilithium",
+      "Options": {
+        "ConnectionString": "redis:6379,defaultDatabase=0",
+        "DatabaseIndex": 0,
+        "Channel": "memoryalpha",
+        "Input": {
+          "top_k": {
+            "From": { "Query": "top_k" },
+            "Required": false,
+            "Default": "5"
+          },
+          "x-file-blob": {
+            "From": { "Body": "file" },
+            "Required": true,
+            "Transform": {
+              "Type": "Warp.Dilithium.Transforms.VolumeBlobTransform, warp.dilithium",
+              "Options": {
+                "VolumePath": "uploads"
+              }
+            }
+          }
+        }
       }
     }
   ],

@@ -34,16 +34,19 @@ Middlewares are registered in `appsettings.json` under `PipelineComponents` and 
 
 All routes, clusters, and middleware are configured in `appsettings.json`. Example:
 
-```json
+```jsonc
 {
   "ReverseProxy": {
     "Routes": {
       "stapi_basic": {
-        "ClusterId": "stapi_cluster",
-        "Match": { "Path": "/api/basic/{**catch-all}" },
+        "ClusterId": "memoryalpha_cluster", // Destination cluster
+        "Match": { "Path": "/api/basic/{**catch-all}" }, // How to match paths
         "Metadata": {
+          // Run before any path transformations are applied
           "Preprocess": "OpenTelemetryStart,ApiKeyValidator,BasicRateLimiter,BasicQuotaChecker",
-          "Predispatch": "StapiOpenApiValidator",
+          // Run after path transformations, but before dispatch
+          "Predispatch": "MemoryAlphaOpenApiValidator",
+          // Run after the dispatch, execution - just before returning the response
           "Postprocess": "OpenTelemetryEnd"
         }
       }
@@ -51,6 +54,9 @@ All routes, clusters, and middleware are configured in `appsettings.json`. Examp
   },
   "PipelineComponents": [
     {
+      // Checks to see if the current user with "Keyheaders" header
+      // x-jwt-email by default is within their quota limits before
+      // allowing the request to proceed
       "Name": "BasicQuotaChecker",
       "Type": "Warp.Middleware.QuotaChecker, warp",
       "Options": {
@@ -119,17 +125,19 @@ You can select these compound configurations from the VS Code Run/Debug panel to
 
 ### **Test the API**
 
-Ensure that the "Warp API Gateway" launch configuration is active before testing and then run any of the scripts under `scripts/tests`.
+Ensure that the "Warp API Gateway" launch configuration is active before testing and then run `scripts/memoryalpha_chat.sh`
 
-These scripts will:
+This script will:
 
-- Prompt you to login to Google (`google-login.sh`)
+- Prompt you to login to Google (`google-login.sh`). NOTE: This only uses the gcloud CLI to login and generate a JWT via `gcloud auth print-identity-token`. This token is only used for your local debugging session and never stored or sent anywhere else.
 - Use the JWT to fetch a WARP API key for your username (`get-api-key.sh`)
-- Use the WARP API key to perform a search using the Star Trek API for "the best of both worlds" (`the-best-of-both-worlds.sh`)
+- Use the WARP API key to allow you to chat with the [MemoryAlpha RAG API](https://github.com/aniongithub/memoryalpha-rag-api)
+
+![](https://github.com/aniongithub/memoryalpha-rag-api/raw/main/assets/20250806_232014_chat.gif)
 
 You can use the OpenAPI specs in
 
-- `spec/stapi.yaml`
+- `spec/memoryalpha-rag-api-spec.json`
 - `warp.apis.admin.yml`
 - `warp.apis.developer.yml`
 
@@ -141,8 +149,8 @@ Warp supports a variety of backends for persistence of its middleware data to de
 
 - **Json file** - This is not meant for production use and simply uses a JSON file to store all data.
 - **Sqlite** - This can be used for single-instance API gateways in small-scale deployments as there is no scalable, efficient way to share a single sqlite Db across multiple nodes.
-- **PostgreSQL** - This DataContext implementation connects to a PostgreSQL instance using an Npgsql-type connection string. In order to enable this, please make the appropriate changes to `.devcontainer/docker-compose-dev.yml` and `config/shared/datacontext.jsonc` and rebuild the devcontainer.
-- **Firestore** - This DataContext implementation connects to a Firestore instance (or, for local development a Firestore emulator). In order to enable this, please make the appropriate changes to `.devcontainer/docker-compose-dev.yml` and `config/shared/datacontext.jsonc` and rebuild the devcontainer.
+- **PostgreSQL** - This DataContext implementation connects to a PostgreSQL instance using an Npgsql-type connection string. In order to enable this, please make the appropriate changes to `config/shared/datacontext.jsonc` and restart Warp.
+- **Firestore** - This DataContext implementation connects to a Firestore instance (or, for local development a Firestore emulator). In order to enable this, please make the appropriate changes to `config/shared/datacontext.jsonc` and restart warp.
 
 Note: Changes to local configurations used for testing PostgreSQL and Firestore should not be committed to git, but only used locally.
 

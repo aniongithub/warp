@@ -45,12 +45,26 @@
                 "ASPNETCORE_URLS": "http://127.0.0.1:5003",
                 "FIRESTORE_EMULATOR_HOST": "firestore:8080"
             }
+        },
+        {
+            "name": "Plasma",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp.plasma/bin/Debug/net9.0/warp.plasma.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "env": {
+                "ASPNETCORE_ENVIRONMENT": "Development",
+                "FIRESTORE_EMULATOR_HOST": "firestore:8080"
+            }
         }
     ],
     "compounds": [
         {
             "name": "Warp API Gateway",
-            "configurations": ["Warp", "DevApi", "AdminApi"]
+            "configurations": ["Warp", "DevApi", "AdminApi", "Plasma"]
         }
     ]
 }

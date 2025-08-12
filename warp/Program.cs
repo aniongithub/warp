@@ -5,7 +5,7 @@ using Warp;
 using Warp.Core.Data;
 using Warp.Core.Middleware;
 using Warp.Core.Helper;
-using Warp.Middleware;
+using Warp.Dilithium.Middleware;
 using System.Diagnostics;
 using Microsoft.VisualBasic;
 using System.Reflection;
@@ -19,6 +19,7 @@ var config = configBuilder.Build();
 // Use the extension method to create the DataContext from configuration
 var dataContext = config.GetSection("DataContext").CreateFromConfiguration();
 builder.Services.AddSingleton(dataContext);
+builder.Services.AddRequestTimeouts();
 
 // Load pipeline definitions
 var pipelineSection = config.GetSection("PipelineComponents");
@@ -60,12 +61,24 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
             tempLogger.LogDebug("Resolving middleware type: {Type}", descriptor.Type);
             var middlewareType = descriptor.Type.ResolveType()
                 ?? throw new Exception($"Could not find middleware type: {descriptor.Type}");
-            tempLogger.LogDebug("Checking base type for middleware: {MiddlewareType}", middlewareType.FullName);
-            var configBaseType = middlewareType.BaseType;
-            if (configBaseType == null || !configBaseType.IsGenericType || configBaseType.GetGenericTypeDefinition() != typeof(MiddlewareBase<>))
+            tempLogger.LogDebug("Checking inheritance chain for middleware: {MiddlewareType}", middlewareType.FullName);
+            
+            // Find the MiddlewareBase<> in the inheritance chain
+            Type? configBaseType = null;
+            var currentType = middlewareType;
+            while (currentType != null && currentType != typeof(object))
             {
-                throw new Exception($"Middleware type {middlewareType.FullName} does not inherit from MiddlewareBase<>.");
+                if (currentType.IsGenericType && currentType.GetGenericTypeDefinition() == typeof(MiddlewareBase<>))
+                {
+                    configBaseType = currentType;
+                    break;
+                }
+                currentType = currentType.BaseType;
             }
+            
+            if (configBaseType == null)
+                throw new Exception($"Middleware type {middlewareType.FullName} does not inherit from MiddlewareBase<>.");
+            
             tempLogger.LogDebug("Resolving configuration type for middleware: {MiddlewareType}", middlewareType.FullName);
             var configType = configBaseType.GetGenericArguments()[0];
             var configInstance = Activator.CreateInstance(configType);
@@ -77,7 +90,7 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
                 if (needsOtel && !is_otel_middleware)
                 {
                     descriptor.Options["TracingEnabled"] = "true";
-                    descriptor.Options["TracingProvider"] = "Warp.Middleware.OpenTelemetryTracingProvider, Warp";
+                    descriptor.Options["TracingProvider"] = "Warp.Dilithium.Middleware.OpenTelemetryTracingProvider, warp.dilithium";
                     descriptor.Options["TraceName"] = $"{descriptor.Name}.Trace";
                 }
                 tempLogger.LogDebug("Binding options for middleware: {Name}", descriptor.Name);
@@ -169,6 +182,7 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
 
 // Now build the app
 var app = builder.Build();
+app.UseRequestTimeouts();
 
 var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
 
