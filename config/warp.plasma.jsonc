@@ -17,7 +17,7 @@
   "PollingIntervalMs": 2000,
   "MaxConcurrentJobs": 10,
   "JobTimeoutMs": 300000,
-  "HttpTimeoutMs": 30000,
+  "HttpTimeoutMs": 300000,
   
   // Redis connection settings
   "Redis": {

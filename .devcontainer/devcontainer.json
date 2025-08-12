@@ -15,7 +15,8 @@
         "patcx.vscode-nuget-gallery",
         "fernandoescolar.vscode-solution-explorer",
         "qwtel.sqlite-viewer",
-        "zaaack.markdown-editor"
+        "zaaack.markdown-editor",
+        "cweijan.vscode-redis-client"
       ]
     }
   },
