@@ -3,25 +3,25 @@
   // This file defines all reverse proxy clusters and their destinations  
     "Clusters": {
         "admin_api_cluster": {
-        "Destinations": {
-            "admin": {
-            "Address": "http://127.0.0.1:5003/"
+            "Destinations": {
+                "admin": {
+                "Address": "http://127.0.0.1:5003/"
+                }
             }
-        }
         },
         "developer_api_cluster": {
-        "Destinations": {
-            "developer": {
-            "Address": "http://127.0.0.1:5002/"
+            "Destinations": {
+                "developer": {
+                "Address": "http://127.0.0.1:5002/"
+                }
             }
-        }
         },
         "memoryalpha_cluster": {
-        "Destinations": {
-            "memoryalpha": {
-            "Address": "http://memoryalpha-rag-api:8000"
+            "Destinations": {
+                "memoryalpha": {
+                "Address": "http://memoryalpha-rag-api:8000"
+                }
             }
-        }
         }
     }
 }

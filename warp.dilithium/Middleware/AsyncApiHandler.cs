@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Warp.Core.Data;
 using Warp.Core.Job;
 using Warp.Core.Middleware;
+using Warp.Dilithium.Transforms;
 using Yarp.ReverseProxy.Model;
 
 namespace Warp.Dilithium.Middleware;
@@ -22,6 +23,13 @@ public class InputMapping
     public InputSource From { get; set; } = new();
     public bool Required { get; set; } = false;
     public string? Default { get; set; }
+    public TransformConfig? Transform { get; set; }
+}
+
+public class TransformConfig
+{
+    public string Type { get; set; } = string.Empty;
+    public Dictionary<string, object?> Options { get; set; } = new();
 }
 
 public class InputSource
@@ -131,9 +139,10 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions> where
     private async Task HandleSubmit(HttpContext context, OperationContext operation)
     {
         var extractedInputs = await ExtractInputsAsync(context);
+        var parameterMappings = BuildParameterMappings();
         var routingInfo = ExtractRoutingInfo(context);
         var user = await GetUserAsync(context);
-        var jobId = await CreateAndEnqueueJobAsync(user, extractedInputs, routingInfo);
+        var jobId = await CreateAndEnqueueJobAsync(user, extractedInputs, parameterMappings, routingInfo);
         
         await WriteJsonResponse(context, 202, new { jobId });
     }
@@ -207,10 +216,71 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions> where
     }
 
     // Abstract methods for concrete implementations
-    protected abstract Task<string> CreateAndEnqueueJobAsync(IUser user, Dictionary<string, object?> extractedInputs, JobRoutingInfo routingInfo);
+    protected abstract Task<string> CreateAndEnqueueJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo);
     protected abstract Task<JobStatus> GetJobStatusAsync(string jobId, string userId);
     protected abstract Task<JobResult> GetJobResultAsync(string jobId, string userId);
     protected abstract Task CancelJobAsync(string jobId, string userId);
+
+    // Transform helper methods
+    private ITransform CreateTransform(TransformConfig transformConfig)
+    {
+        var transformType = Type.GetType(transformConfig.Type);
+        if (transformType == null)
+            throw new InvalidOperationException($"Transform type not found: {transformConfig.Type}");
+
+        // Create options object - for now assume VolumeBlobTransformOptions
+        // In a more complete implementation, we'd use reflection or a factory pattern
+        if (transformConfig.Type.Contains("VolumeBlobTransform"))
+        {
+            var optionsType = typeof(VolumeBlobTransformOptions);
+            var options = Activator.CreateInstance(optionsType) as VolumeBlobTransformOptions;
+            
+            if (transformConfig.Options.TryGetValue("VolumePath", out var volumePath))
+                options!.VolumePath = volumePath?.ToString() ?? "uploads";
+            
+            return (ITransform)Activator.CreateInstance(transformType, options)!;
+        }
+        
+        throw new NotSupportedException($"Transform type not supported: {transformConfig.Type}");
+    }
+
+    private Dictionary<string, ParameterMapping> BuildParameterMappings()
+    {
+        var mappings = new Dictionary<string, ParameterMapping>();
+        
+        foreach (var (paramName, inputMapping) in Options.Input)
+        {
+            mappings[paramName] = new ParameterMapping
+            {
+                From = new Warp.Core.Job.InputSource
+                {
+                    Header = inputMapping.From.Header,
+                    Query = inputMapping.From.Query,
+                    Body = inputMapping.From.Body
+                },
+                Required = inputMapping.Required,
+                Default = inputMapping.Default,
+                Transform = inputMapping.Transform != null ? new Warp.Core.Job.TransformConfig
+                {
+                    Type = inputMapping.Transform.Type,
+                    Options = inputMapping.Transform.Options
+                } : null
+            };
+        }
+        
+        return mappings;
+    }
+
+    private string GetSourceDescription(InputSource source)
+    {
+        if (!string.IsNullOrEmpty(source.Header))
+            return $"Header:{source.Header}";
+        if (!string.IsNullOrEmpty(source.Query))
+            return $"Query:{source.Query}";
+        if (!string.IsNullOrEmpty(source.Body))
+            return $"Body:{source.Body}";
+        return "Unknown";
+    }
 
     // Routing information extraction (shared across all implementations)
     protected JobRoutingInfo ExtractRoutingInfo(HttpContext context)
@@ -254,7 +324,7 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions> where
         };
     }
 
-    // Input extraction logic (moved from JobDispatcher)
+    // Input extraction logic with transform support
     private async Task<Dictionary<string, object?>> ExtractInputsAsync(HttpContext context)
     {
         var extractedInputs = new Dictionary<string, object?>();
@@ -310,7 +380,21 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions> where
                     throw new ArgumentException($"Required parameter '{paramName}' is missing");
             }
 
-            extractedInputs[paramName] = value;
+            // Apply transform if configured
+            if (mapping.Transform != null && value != null)
+            {
+                var transform = CreateTransform(mapping.Transform);
+                var transformedValue = await transform.ForwardAsync(value);
+                
+                extractedInputs[paramName] = transformedValue;
+                
+                Logger.LogDebug("Applied transform {TransformType} to parameter {ParamName}: {OriginalValue} -> {TransformedValue}", 
+                    mapping.Transform.Type, paramName, value, transformedValue);
+            }
+            else
+            {
+                extractedInputs[paramName] = value;
+            }
         }
 
         return extractedInputs;
@@ -359,14 +443,12 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions> where
     {
         var form = await context.Request.ReadFormAsync();
         
-        // Check if it's a file field - this should not happen in AsyncApiHandler!
-        if (form.Files.Any(f => f.Name == fieldName))
+        // Check if it's a file field
+        var file = form.Files.FirstOrDefault(f => f.Name == fieldName);
+        if (file != null)
         {
-            throw new InvalidOperationException(
-                $"AsyncApiHandler encountered file field '{fieldName}' in form data. " +
-                "File uploads should be handled by upload middleware (e.g., FileSystemFileUploader) " +
-                "before the AsyncApiHandler runs. Configure the uploader in the pipeline's Predispatch " +
-                "stage and map the uploaded file path from headers instead.");
+            // Return the IFormFile directly - the transform will handle it
+            return file;
         }
         
         // Check regular form fields

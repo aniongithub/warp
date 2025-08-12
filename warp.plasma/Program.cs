@@ -2,14 +2,12 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Http;
-using System.Linq;
-using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using Warp.Core.Helper;
 using Warp.Core.Job;
 using Warp.Core.Job.Contexts;
+using Warp.Dilithium.Transforms;
 
 namespace Warp.Plasma;
 
@@ -204,8 +202,12 @@ public class PlasmaEngine
                         _logger.LogInformation("Routing job to sync API: {SyncUrl} (Cluster: {ClusterId})", syncUrl, job.ClusterId);
                         _logger.LogDebug("Job parameters: {Parameters}", JsonSerializer.Serialize(job.Parameters));
                         
+                        // Reverse transforms to reconstruct original request
+                        var originalParameters = await ReverseTransformsAsync(job);
+                        _logger.LogDebug("Parameters after reverse transform: {Parameters}", JsonSerializer.Serialize(originalParameters));
+                        
                         // Execute the job by dispatching to sync API
-                        await ExecuteJobAsync(job, syncUrl);
+                        await ExecuteJobAsync(job, syncUrl, originalParameters);
                     }
                     catch (Exception ex)
                     {
@@ -228,7 +230,7 @@ public class PlasmaEngine
         await Task.CompletedTask;
     }
 
-    private async Task ExecuteJobAsync(Job job, string syncUrl)
+    private async Task ExecuteJobAsync(Job job, string syncUrl, Dictionary<string, object?> originalParameters)
     {
         try
         {
@@ -255,16 +257,49 @@ public class PlasmaEngine
                 }
             }
             
+            // Check if we have file data that needs multipart encoding
+            var hasFileData = originalParameters.Values.Any(v => IsFileData(v));
+            
             // Add request body if we have parameters and it's not a GET request
-            if (job.Parameters.Any() && httpMethod != HttpMethod.Get)
+            if (originalParameters.Any() && httpMethod != HttpMethod.Get)
             {
-                var jsonContent = JsonSerializer.Serialize(job.Parameters);
-                request.Content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
+                if (hasFileData)
+                {
+                    // Create multipart content for file uploads
+                    var multipartContent = new MultipartFormDataContent();
+                    
+                    foreach (var (key, value) in originalParameters)
+                    {
+                        if (IsFileData(value))
+                        {
+                            var fileData = value as BlobFileContent;
+                            if (fileData != null)
+                            {
+                                var fileContent = new ByteArrayContent(fileData.Content);
+                                fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(fileData.ContentType);
+                                multipartContent.Add(fileContent, key, fileData.FileName);
+                            }
+                        }
+                        else
+                        {
+                            // Add as string content
+                            multipartContent.Add(new StringContent(value?.ToString() ?? ""), key);
+                        }
+                    }
+                    
+                    request.Content = multipartContent;
+                }
+                else
+                {
+                    // Standard JSON content
+                    var jsonContent = JsonSerializer.Serialize(originalParameters);
+                    request.Content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
+                }
                 
                 // Add content headers that couldn't be added to request headers
                 foreach (var header in job.Headers)
                 {
-                    if (!request.Headers.Contains(header.Key))
+                    if (!request.Headers.Contains(header.Key) && request.Content != null)
                     {
                         request.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
                     }
@@ -272,31 +307,33 @@ public class PlasmaEngine
             }
             
             // Set a reasonable timeout
-            var timeoutMs = int.Parse(_configuration["HttpTimeoutMs"] ?? "30000");
+            var timeoutMs = int.Parse(_configuration["HttpTimeoutMs"] ?? "3000000");
             using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMs));
             
             // Execute the HTTP request
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-            using var response = await _httpClient.SendAsync(request, cts.Token);
-            stopwatch.Stop();
-            
-            // Read response content
-            var responseContent = await response.Content.ReadAsStringAsync();
-            
-            _logger.LogInformation("✅ Job {JobId} completed in {ElapsedMs}ms with status {StatusCode}", 
-                job.Id, stopwatch.ElapsedMilliseconds, (int)response.StatusCode);
-            
-            // Update job status based on response
-            if (response.IsSuccessStatusCode)
+            using (var response = await _httpClient.SendAsync(request, cts.Token))
             {
-                await _jobContext!.UpdateJobAsync(job, JobStatus.Completed, output: responseContent);
-                _logger.LogInformation("Job {JobId} marked as completed", job.Id);
-            }
-            else
-            {
-                var errorMessage = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {responseContent}";
-                await _jobContext!.UpdateJobAsync(job, JobStatus.Failed, error: errorMessage);
-                _logger.LogWarning("Job {JobId} marked as failed: {Error}", job.Id, errorMessage);
+                stopwatch.Stop();
+                
+                // Read response content
+                var responseContent = await response.Content.ReadAsStringAsync();
+                
+                _logger.LogInformation("✅ Job {JobId} completed in {ElapsedMs}ms with status {StatusCode}", 
+                    job.Id, stopwatch.ElapsedMilliseconds, (int)response.StatusCode);
+                
+                // Update job status based on response
+                if (response.IsSuccessStatusCode)
+                {
+                    await _jobContext!.UpdateJobAsync(job, JobStatus.Completed, output: responseContent);
+                    _logger.LogInformation("Job {JobId} marked as completed", job.Id);
+                }
+                else
+                {
+                    var errorMessage = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {responseContent}";
+                    await _jobContext!.UpdateJobAsync(job, JobStatus.Failed, error: errorMessage);
+                    _logger.LogWarning("Job {JobId} marked as failed: {Error}", job.Id, errorMessage);
+                }
             }
         }
         catch (OperationCanceledException) when (_httpClient != null)
@@ -311,5 +348,105 @@ public class PlasmaEngine
             await _jobContext!.UpdateJobAsync(job, JobStatus.Failed, error: errorMessage);
             _logger.LogError(ex, "Job {JobId} failed with exception", job.Id);
         }
+    }
+
+    private bool IsFileData(object? value)
+    {
+        if (value == null) return false;
+        
+        // Check if it's a BlobFileContent from the real transform
+        return value is BlobFileContent;
+    }
+
+    private async Task<Dictionary<string, object?>> ReverseTransformsAsync(Job job)
+    {
+        var originalParameters = new Dictionary<string, object?>();
+        
+        // Process each parameter mapping to reverse transforms
+        foreach (var (paramName, mapping) in job.ParameterMappings)
+        {
+            var currentValue = job.Parameters.TryGetValue(paramName, out var value) ? value : null;
+            
+            // If there's a transform, reverse it
+            if (mapping.Transform != null && currentValue != null)
+            {
+                try
+                {
+                    var transform = CreateTransform(mapping.Transform);
+                    // Create a simple service provider - in production this would be injected
+                    var services = new ServiceCollection().BuildServiceProvider();
+                    var reversedValue = await transform.ReverseAsync(currentValue, services);
+                    
+                    // Map back to original field location
+                    MapToOriginalLocation(originalParameters, mapping.From, reversedValue);
+                    
+                    _logger.LogDebug("Reversed transform {TransformType} for parameter {ParamName}: {TransformedValue} -> {OriginalValue}", 
+                        mapping.Transform.Type, paramName, currentValue, reversedValue);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to reverse transform for parameter {ParamName}", paramName);
+                    // Fall back to original value
+                    MapToOriginalLocation(originalParameters, mapping.From, currentValue);
+                }
+            }
+            else
+            {
+                // No transform, just map back to original location
+                MapToOriginalLocation(originalParameters, mapping.From, currentValue);
+            }
+        }
+        
+        return originalParameters;
+    }
+
+    private void MapToOriginalLocation(Dictionary<string, object?> parameters, Warp.Core.Job.InputSource source, object? value)
+    {
+        // For simplicity, we'll reconstruct as a JSON body since that's what most APIs expect
+        // The original extraction logic shows we support header, query, and body sources
+        
+        if (!string.IsNullOrEmpty(source.Body))
+        {
+            // Map to body field - for nested paths like "user.name", we'd need more complex logic
+            parameters[source.Body] = value;
+        }
+        else if (!string.IsNullOrEmpty(source.Query))
+        {
+            // For query parameters, we'll include them in the body for simplicity
+            // In a more complete implementation, we'd separate query from body
+            parameters[source.Query] = value;
+        }
+        else if (!string.IsNullOrEmpty(source.Header))
+        {
+            // Headers should be handled separately, but for now include in body
+            parameters[source.Header] = value;
+        }
+    }
+
+    private ITransform CreateTransform(Warp.Core.Job.TransformConfig transformConfig)
+    {
+        var transformType = Type.GetType(transformConfig.Type);
+        if (transformType == null)
+            throw new InvalidOperationException($"Transform type not found: {transformConfig.Type}");
+
+        // Use reflection to find the options type based on the transform type
+        var optionsProperty = transformType.BaseType?.GetGenericArguments().FirstOrDefault();
+        if (optionsProperty == null)
+            throw new InvalidOperationException($"Could not determine options type for transform: {transformConfig.Type}");
+
+        var options = Activator.CreateInstance(optionsProperty);
+        
+        // Set options from the stored configuration using reflection
+        foreach (var (key, value) in transformConfig.Options)
+        {
+            var property = optionsProperty.GetProperty(key);
+            if (property != null && property.CanWrite)
+            {
+                var convertedValue = value?.ToString();
+                property.SetValue(options, convertedValue);
+            }
+        }
+        
+        return (ITransform)Activator.CreateInstance(transformType, options)!;
     }
 }

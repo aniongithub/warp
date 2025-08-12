@@ -20,7 +20,40 @@ public class Job : IJob
     public Dictionary<string, object?> Parameters { get; set; } = new();
     public Dictionary<string, string> Headers { get; set; } = new();
 
+    // Complete input mapping configuration for HTTP request reconstruction
+    public Dictionary<string, ParameterMapping> ParameterMappings { get; set; } = new();
+
     // Actual API input/output data
     public string? Input { get; set; } = string.Empty;
     public string? Output { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Stores the mapping configuration for a parameter to reconstruct HTTP requests
+/// </summary>
+public class ParameterMapping
+{
+    public InputSource From { get; set; } = new();
+    public bool Required { get; set; } = false;
+    public string? Default { get; set; }
+    public TransformConfig? Transform { get; set; }
+}
+
+/// <summary>
+/// Defines where a parameter comes from in the HTTP request
+/// </summary>
+public class InputSource
+{
+    public string? Header { get; set; }
+    public string? Query { get; set; }
+    public string? Body { get; set; }
+}
+
+/// <summary>
+/// Configuration for parameter transforms
+/// </summary>
+public class TransformConfig
+{
+    public string Type { get; set; } = string.Empty;
+    public Dictionary<string, object?> Options { get; set; } = new();
 }
