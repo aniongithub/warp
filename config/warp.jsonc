@@ -13,7 +13,7 @@
           "Path": "/admin/{**remainder}"
         },
         "Metadata": {
-          "Preprocess": "OpenTelemetryStart,JwtValidator,JwtRateLimiter,AdminPermissionsChecker",
+          "Preprocess": "OpenTelemetryStart,AdminJwtValidator,RateLimiter,AdminPermissionsChecker",
           "Postprocess": "OpenTelemetryEnd"
         }
       },
@@ -23,7 +23,7 @@
           "Path": "/developer/{**remainder}"
         },
         "Metadata": {
-          "Preprocess": "OpenTelemetryStart,JwtValidator,JwtRateLimiter, DevPermissionsChecker",
+          "Preprocess": "OpenTelemetryStart,JwtValidator,RateLimiter,DevPermissionsChecker",
           "Predispatch": "DevOpenApiValidator",
           "Postprocess": "OpenTelemetryEnd"
         }
@@ -40,7 +40,8 @@
           { "PathRemovePrefix": "/pro" }
         ],
         "Metadata": {
-          "Preprocess": "OpenTelemetryStart,ApiKeyValidator,ProRateLimiter,ProQuotaChecker",
+          
+          "Preprocess": "OpenTelemetryStart,ApiKeyOrJwtKeyValidator,ProRateLimiter,ProQuotaChecker",
           "Predispatch": "MemoryAlphaOpenApiValidator",
           "Postprocess": "OpenTelemetryEnd"
         }
@@ -58,7 +59,7 @@
           { "PathRemovePrefix": "/pro" }
         ],
         "Metadata": {
-          "Preprocess": "OpenTelemetryStart,ApiKeyValidator,ProRateLimiter,ProQuotaChecker",
+          "Preprocess": "OpenTelemetryStart,ApiKeyOrJwtKeyValidator,ProRateLimiter,ProQuotaChecker",
           "Predispatch": "MemoryAlphaOpenApiValidator,RedisAsyncApiHandler",
           "Postprocess": "OpenTelemetryEnd"
         }
@@ -75,7 +76,7 @@
           { "PathRemovePrefix": "/basic" }
         ],
         "Metadata": {
-          "Preprocess": "OpenTelemetryStart,ApiKeyValidator,BasicRateLimiter,BasicQuotaChecker",
+          "Preprocess": "OpenTelemetryStart,ApiKeyOrJwtKeyValidator,BasicRateLimiter,BasicQuotaChecker",
           "Predispatch": "MemoryAlphaOpenApiValidator",
           "Postprocess": "OpenTelemetryEnd"
         }
@@ -91,6 +92,33 @@
       }
     },
     {
+      "Name": "ApiKeyOrJwtKeyValidator",
+      "Type": "Warp.Dilithium.Middleware.OrMiddleware, warp.dilithium",
+      "Options": {
+        "Middleware2": {
+          "Name": "JwtValidator",
+          "Type": "Warp.Dilithium.Middleware.JwtValidator, warp.dilithium",
+          "Options": {
+            "JwksUri": "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
+          }
+        },
+        "Middleware1":     {
+          "Name": "ApiKeyValidator",
+          "Type": "Warp.Dilithium.Middleware.ApiKeyValidator, warp.dilithium"
+        }
+      }
+    },
+    {
+      "Name": "AdminJwtValidator",
+      "Type": "Warp.Dilithium.Middleware.JwtValidator, warp.dilithium",
+      "Options": {
+        "JwksUri": "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
+        "ValidEmails": [
+          "ani@anionline.me"
+        ]
+      }
+    },
+    {
       "Name": "JwtValidator",
       "Type": "Warp.Dilithium.Middleware.JwtValidator, warp.dilithium",
       "Options": {
@@ -98,7 +126,7 @@
       }
     },
     {
-      "Name": "JwtRateLimiter",
+      "Name": "RateLimiter",
       "Type": "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium",
       "Options": {
         "RateLimitHz": 2.0
@@ -110,10 +138,6 @@
       "options": {
         "RateLimitHz": 2.0
       }
-    },
-    {
-      "Name": "ApiKeyValidator",
-      "Type": "Warp.Dilithium.Middleware.ApiKeyValidator, warp.dilithium"
     },
     {
       "Name": "OpenTelemetryEnd",
