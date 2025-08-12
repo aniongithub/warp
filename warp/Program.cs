@@ -126,7 +126,10 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
     if (needsOtel)
     {
         tempLogger.LogInformation("OpenTelemetry middleware detected, configuring OpenTelemetry...");
-        var otelSection = builder.Configuration.GetSection("OpenTelemetry");
+
+        // Ensure we use the correct config object, not builder.Configuration
+        var otelSection = config.GetSection("OpenTelemetry");
+
         var sourceNames = otelSection.GetSection("SourceNames").Get<string[]>() ?? new[] { "Warp" };
 
         // Ensure all routes are traced if OpenTelemetry is enabled
