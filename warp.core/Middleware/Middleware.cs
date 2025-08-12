@@ -14,7 +14,16 @@ public class MiddlewareOptions
     public List<string> ApplyOn { get; set; } = new();
 }
 
-public abstract class MiddlewareBase<TOptions>
+/// <summary>
+/// Non-generic interface for middleware to allow polymorphic usage
+/// </summary>
+public interface IWarpMiddleware
+{
+    string Name { get; }
+    Task InvokeWithTracingAsync(HttpContext context, RequestDelegate next);
+}
+
+public abstract class MiddlewareBase<TOptions> : IWarpMiddleware
     where TOptions : MiddlewareOptions
 {
     protected TOptions Options { get; }
