@@ -423,30 +423,25 @@ public class PlasmaEngine
         }
     }
 
-    private ITransform CreateTransform(Warp.Core.Job.TransformConfig transformConfig)
+    private ITransform CreateTransform(TransformConfig transformConfig)
     {
         var transformType = Type.GetType(transformConfig.Type);
         if (transformType == null)
             throw new InvalidOperationException($"Transform type not found: {transformConfig.Type}");
 
-        // Use reflection to find the options type based on the transform type
-        var optionsProperty = transformType.BaseType?.GetGenericArguments().FirstOrDefault();
-        if (optionsProperty == null)
-            throw new InvalidOperationException($"Could not determine options type for transform: {transformConfig.Type}");
+        var optionsType = transformType.BaseType?.GetGenericArguments().FirstOrDefault();
+        if (optionsType == null)
+            throw new InvalidOperationException($"Transform type {transformConfig.Type} does not have a parameterless constructor or options type");
+        var options = Activator.CreateInstance(optionsType);
 
-        var options = Activator.CreateInstance(optionsProperty);
-        
-        // Set options from the stored configuration using reflection
-        foreach (var (key, value) in transformConfig.Options)
+        // Copy all properties from the options dictionary to the options object
+        foreach (var kvp in transformConfig.Options)
         {
-            var property = optionsProperty.GetProperty(key);
-            if (property != null && property.CanWrite)
-            {
-                var convertedValue = value?.ToString();
-                property.SetValue(options, convertedValue);
-            }
+            var prop = optionsType.GetProperty(kvp.Key);
+            if (prop != null && prop.CanWrite)
+                prop.SetValue(options, Convert.ChangeType(kvp.Value.ToString(), prop.PropertyType));
         }
-        
+
         return (ITransform)Activator.CreateInstance(transformType, options)!;
     }
 }

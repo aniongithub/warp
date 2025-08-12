@@ -228,20 +228,20 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions> where
         if (transformType == null)
             throw new InvalidOperationException($"Transform type not found: {transformConfig.Type}");
 
-        // Create options object - for now assume VolumeBlobTransformOptions
-        // In a more complete implementation, we'd use reflection or a factory pattern
-        if (transformConfig.Type.Contains("VolumeBlobTransform"))
+        var optionsType = transformType.BaseType?.GetGenericArguments().FirstOrDefault();
+        if (optionsType == null)
+            throw new InvalidOperationException($"Transform type {transformConfig.Type} does not have a parameterless constructor or options type");
+        var options = Activator.CreateInstance(optionsType);
+
+        // Copy all properties from the options dictionary to the options object
+        foreach (var kvp in transformConfig.Options)
         {
-            var optionsType = typeof(VolumeBlobTransformOptions);
-            var options = Activator.CreateInstance(optionsType) as VolumeBlobTransformOptions;
-            
-            if (transformConfig.Options.TryGetValue("VolumePath", out var volumePath))
-                options!.VolumePath = volumePath?.ToString() ?? "uploads";
-            
-            return (ITransform)Activator.CreateInstance(transformType, options)!;
+            var prop = optionsType.GetProperty(kvp.Key);
+            if (prop != null && prop.CanWrite)
+                prop.SetValue(options, Convert.ChangeType(kvp.Value, prop.PropertyType));
         }
-        
-        throw new NotSupportedException($"Transform type not supported: {transformConfig.Type}");
+
+        return (ITransform)Activator.CreateInstance(transformType, options)!;
     }
 
     private Dictionary<string, ParameterMapping> BuildParameterMappings()
