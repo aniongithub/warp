@@ -48,11 +48,15 @@ public class OperationContext
     public string RemainingPath { get; set; } = string.Empty;
 }
 
-public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions> where TOptions : AsyncApiHandlerOptions
+public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDisposable where TOptions : AsyncApiHandlerOptions
 {
+    private readonly SemaphoreSlim _concurrencyLimiter;
+    private bool _disposed = false;
+
     protected AsyncApiHandler(string name, ILogger logger, IDataContext context, TOptions options) 
         : base(name, logger, context, options)
     {
+        _concurrencyLimiter = new SemaphoreSlim(options.MaxConcurrentDispatches, options.MaxConcurrentDispatches);
     }
 
     protected override async Task InvokeAsync(HttpContext context, RequestDelegate next)
@@ -132,13 +136,41 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions> where
 
     private async Task HandleSubmit(HttpContext context, OperationContext operation)
     {
-        var extractedInputs = await ExtractInputsAsync(context);
-        var parameterMappings = BuildParameterMappings();
-        var routingInfo = ExtractRoutingInfo(context);
-        var user = await GetUserAsync(context);
-        var jobId = await CreateAndEnqueueJobAsync(user, extractedInputs, parameterMappings, routingInfo);
+        // Check if we can acquire a slot for concurrent dispatch
+        var timeoutMs = Options.DispatchTimeoutMs;
+        Logger.LogDebug("Attempting to acquire concurrency slot (available: {Available}/{Max})", 
+            _concurrencyLimiter.CurrentCount, Options.MaxConcurrentDispatches);
+            
+        var acquired = await _concurrencyLimiter.WaitAsync(timeoutMs);
         
-        await WriteJsonResponse(context, 202, new { jobId });
+        if (!acquired)
+        {
+            Logger.LogWarning("Rejected job submission due to max concurrent dispatches limit ({MaxConcurrent})", Options.MaxConcurrentDispatches);
+            await WriteJsonResponse(context, 429, new { error = "Too many concurrent requests. Please try again later." });
+            return;
+        }
+
+        try
+        {
+            Logger.LogDebug("Concurrency slot acquired (remaining: {Remaining}/{Max})", 
+                _concurrencyLimiter.CurrentCount, Options.MaxConcurrentDispatches);
+                
+            var extractedInputs = await ExtractInputsAsync(context);
+            var parameterMappings = BuildParameterMappings();
+            var routingInfo = ExtractRoutingInfo(context);
+            var user = await GetUserAsync(context);
+            var jobId = await CreateAndEnqueueJobAsync(user, extractedInputs, parameterMappings, routingInfo);
+            
+            await WriteJsonResponse(context, 202, new { jobId });
+            
+            Logger.LogDebug("Job {JobId} submitted successfully, releasing concurrency slot", jobId);
+        }
+        finally
+        {
+            _concurrencyLimiter.Release();
+            Logger.LogDebug("Concurrency slot released (available: {Available}/{Max})", 
+                _concurrencyLimiter.CurrentCount, Options.MaxConcurrentDispatches);
+        }
     }
 
     private async Task HandleStatus(HttpContext context, OperationContext operation)
@@ -442,5 +474,20 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions> where
         }
 
         return null;
+    }
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        if (!_disposed && disposing)
+        {
+            _concurrencyLimiter?.Dispose();
+            _disposed = true;
+        }
     }
 }
