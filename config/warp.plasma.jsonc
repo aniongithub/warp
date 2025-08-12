@@ -2,6 +2,7 @@
   // Warp Plasma Job Processor Configuration
   // This file supports includes and environment variable interpolation
   
+  // We need cluster definitions for sync API dispatch
   "$include:clusters": "shared/clusters.jsonc",
   
   "Logging": {
@@ -15,9 +16,11 @@
   
   // Job processing engine configuration
   "PollingIntervalMs": 2000,
-  "MaxConcurrentJobs": 10,
-  "JobTimeoutMs": 300000,
-  "HttpTimeoutMs": 300000,
+  "MaxConcurrentJobs": 10, // Maximum number of jobs to process concurrently
+  
+  // Timeouts for idle and HTTP requests, 15 mins
+  "IdleTimeoutMs": 900000,
+  "HttpTimeoutMs": 900000,
   
   // Redis connection settings
   "Redis": {

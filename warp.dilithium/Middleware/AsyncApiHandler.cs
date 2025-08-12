@@ -23,13 +23,7 @@ public class InputMapping
     public InputSource From { get; set; } = new();
     public bool Required { get; set; } = false;
     public string? Default { get; set; }
-    public TransformConfig? Transform { get; set; }
-}
-
-public class TransformConfig
-{
-    public string Type { get; set; } = string.Empty;
-    public Dictionary<string, object?> Options { get; set; } = new();
+    public Warp.Core.Job.TransformConfig? Transform { get; set; }
 }
 
 public class InputSource
@@ -54,11 +48,15 @@ public class OperationContext
     public string RemainingPath { get; set; } = string.Empty;
 }
 
-public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions> where TOptions : AsyncApiHandlerOptions
+public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDisposable where TOptions : AsyncApiHandlerOptions
 {
+    private readonly SemaphoreSlim _concurrencyLimiter;
+    private bool _disposed = false;
+
     protected AsyncApiHandler(string name, ILogger logger, IDataContext context, TOptions options) 
         : base(name, logger, context, options)
     {
+        _concurrencyLimiter = new SemaphoreSlim(options.MaxConcurrentDispatches, options.MaxConcurrentDispatches);
     }
 
     protected override async Task InvokeAsync(HttpContext context, RequestDelegate next)
@@ -138,13 +136,41 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions> where
 
     private async Task HandleSubmit(HttpContext context, OperationContext operation)
     {
-        var extractedInputs = await ExtractInputsAsync(context);
-        var parameterMappings = BuildParameterMappings();
-        var routingInfo = ExtractRoutingInfo(context);
-        var user = await GetUserAsync(context);
-        var jobId = await CreateAndEnqueueJobAsync(user, extractedInputs, parameterMappings, routingInfo);
+        // Check if we can acquire a slot for concurrent dispatch
+        var timeoutMs = Options.DispatchTimeoutMs;
+        Logger.LogDebug("Attempting to acquire concurrency slot (available: {Available}/{Max})", 
+            _concurrencyLimiter.CurrentCount, Options.MaxConcurrentDispatches);
+            
+        var acquired = await _concurrencyLimiter.WaitAsync(timeoutMs);
         
-        await WriteJsonResponse(context, 202, new { jobId });
+        if (!acquired)
+        {
+            Logger.LogWarning("Rejected job submission due to max concurrent dispatches limit ({MaxConcurrent})", Options.MaxConcurrentDispatches);
+            await WriteJsonResponse(context, 429, new { error = "Too many concurrent requests. Please try again later." });
+            return;
+        }
+
+        try
+        {
+            Logger.LogDebug("Concurrency slot acquired (remaining: {Remaining}/{Max})", 
+                _concurrencyLimiter.CurrentCount, Options.MaxConcurrentDispatches);
+                
+            var extractedInputs = await ExtractInputsAsync(context);
+            var parameterMappings = BuildParameterMappings();
+            var routingInfo = ExtractRoutingInfo(context);
+            var user = await GetUserAsync(context);
+            var jobId = await CreateAndEnqueueJobAsync(user, extractedInputs, parameterMappings, routingInfo);
+            
+            await WriteJsonResponse(context, 202, new { jobId });
+            
+            Logger.LogDebug("Job {JobId} submitted successfully, releasing concurrency slot", jobId);
+        }
+        finally
+        {
+            _concurrencyLimiter.Release();
+            Logger.LogDebug("Concurrency slot released (available: {Available}/{Max})", 
+                _concurrencyLimiter.CurrentCount, Options.MaxConcurrentDispatches);
+        }
     }
 
     private async Task HandleStatus(HttpContext context, OperationContext operation)
@@ -222,28 +248,6 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions> where
     protected abstract Task CancelJobAsync(string jobId, string userId);
 
     // Transform helper methods
-    private ITransform CreateTransform(TransformConfig transformConfig)
-    {
-        var transformType = Type.GetType(transformConfig.Type);
-        if (transformType == null)
-            throw new InvalidOperationException($"Transform type not found: {transformConfig.Type}");
-
-        var optionsType = transformType.BaseType?.GetGenericArguments().FirstOrDefault();
-        if (optionsType == null)
-            throw new InvalidOperationException($"Transform type {transformConfig.Type} does not have a parameterless constructor or options type");
-        var options = Activator.CreateInstance(optionsType);
-
-        // Copy all properties from the options dictionary to the options object
-        foreach (var kvp in transformConfig.Options)
-        {
-            var prop = optionsType.GetProperty(kvp.Key);
-            if (prop != null && prop.CanWrite)
-                prop.SetValue(options, Convert.ChangeType(kvp.Value, prop.PropertyType));
-        }
-
-        return (ITransform)Activator.CreateInstance(transformType, options)!;
-    }
-
     private Dictionary<string, ParameterMapping> BuildParameterMappings()
     {
         var mappings = new Dictionary<string, ParameterMapping>();
@@ -383,7 +387,7 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions> where
             // Apply transform if configured
             if (mapping.Transform != null && value != null)
             {
-                var transform = CreateTransform(mapping.Transform);
+                var transform = mapping.Transform.CreateTransform();
                 var transformedValue = await transform.ForwardAsync(value);
                 
                 extractedInputs[paramName] = transformedValue;
@@ -470,5 +474,20 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions> where
         }
 
         return null;
+    }
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        if (!_disposed && disposing)
+        {
+            _concurrencyLimiter?.Dispose();
+            _disposed = true;
+        }
     }
 }

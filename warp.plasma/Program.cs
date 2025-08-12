@@ -32,7 +32,7 @@ class Program
                 })
                 .ConfigureServices((context, services) =>
                 {
-                    services.AddSingleton<PlasmaEngine>();
+                    services.AddSingleton<EPS>();
                     services.AddHttpClient();
                 })
                 .ConfigureLogging(logging =>
@@ -43,15 +43,15 @@ class Program
 
             var host = builder.Build();
             
-            var engine = host.Services.GetRequiredService<PlasmaEngine>();
+            var engine = host.Services.GetRequiredService<EPS>();
             var logger = host.Services.GetRequiredService<ILogger<Program>>();
             
-            logger.LogInformation("Warp Plasma Engine initialized");
+            logger.LogInformation("EPS starting up...");
             
             // For now, just demonstrate that we can create a job context
             await engine.InitializeAsync();
-            
-            logger.LogInformation("Warp Plasma Engine ready for job processing");
+
+            logger.LogInformation("EPS online.");
             
             // Start the job processing loop
             await engine.Start();
@@ -66,18 +66,23 @@ class Program
     }
 }
 
-public class PlasmaEngine
+internal sealed class EPS
 {
-    private readonly ILogger<PlasmaEngine> _logger;
+    private readonly ILogger<EPS> _logger;
     private readonly IConfiguration _configuration;
     private readonly HttpClient _httpClient;
     private RedisJobContext? _jobContext;
+    private readonly SemaphoreSlim _concurrencyLimiter;
+    private DateTime _lastJobProcessedAt = DateTime.UtcNow;
 
-    public PlasmaEngine(ILogger<PlasmaEngine> logger, IConfiguration configuration, HttpClient httpClient)
+    public EPS(ILogger<EPS> logger, IConfiguration configuration, HttpClient httpClient)
     {
         _logger = logger;
         _configuration = configuration;
         _httpClient = httpClient;
+        
+        var maxConcurrentJobs = int.Parse(_configuration["MaxConcurrentJobs"] ?? "5");
+        _concurrencyLimiter = new SemaphoreSlim(maxConcurrentJobs, maxConcurrentJobs);
     }
 
     public async Task InitializeAsync()
@@ -98,10 +103,10 @@ public class PlasmaEngine
         // Log configuration for debugging
         var pollingInterval = _configuration["PollingIntervalMs"];
         var maxConcurrentJobs = _configuration["MaxConcurrentJobs"];
-        var enableMetrics = _configuration["Metrics:EnableMetrics"];
+        var idleTimeout = _configuration["IdleTimeoutMs"];
         
-        _logger.LogInformation("Configuration - Polling: {PollingInterval}ms, MaxConcurrent: {MaxConcurrent}, Metrics: {Metrics}", 
-            pollingInterval, maxConcurrentJobs, enableMetrics);
+        _logger.LogInformation("Configuration - Polling: {PollingInterval}ms, MaxConcurrent: {MaxConcurrent}, IdleTimeout: {IdleTimeout}ms", 
+            pollingInterval, maxConcurrentJobs, idleTimeout);
         
         await Task.CompletedTask;
     }
@@ -111,6 +116,7 @@ public class PlasmaEngine
         _logger.LogInformation("🟢 Starting job processing loop...");
         
         var pollingIntervalMs = int.Parse(_configuration["PollingIntervalMs"] ?? "5000");
+        var idleTimeoutMs = int.Parse(_configuration["IdleTimeoutMs"] ?? "300000");
         var cancellationToken = new CancellationTokenSource();
         
         Console.WriteLine("✅ Engine ready. Press Ctrl+C to stop.");
@@ -124,7 +130,29 @@ public class PlasmaEngine
         {
             while (!cancellationToken.Token.IsCancellationRequested)
             {
-                await ProcessJobsAsync();
+                var jobsProcessed = await ProcessJobsAsync();
+                
+                if (jobsProcessed > 0)
+                {
+                    _lastJobProcessedAt = DateTime.UtcNow;
+                    _logger.LogDebug("Reset idle timer after processing {JobCount} jobs", jobsProcessed);
+                }
+                else
+                {
+                    // Check for idle timeout
+                    var idleDuration = DateTime.UtcNow - _lastJobProcessedAt;
+                    if (idleDuration.TotalMilliseconds > idleTimeoutMs)
+                    {
+                        _logger.LogInformation("💤 Idle timeout reached ({IdleMs}ms), shutting down...", idleTimeoutMs);
+                        break;
+                    }
+                    else
+                    {
+                        _logger.LogDebug("Idle for {IdleMs}ms (timeout: {TimeoutMs}ms)", 
+                            (int)idleDuration.TotalMilliseconds, idleTimeoutMs);
+                    }
+                }
+                
                 await Task.Delay(pollingIntervalMs, cancellationToken.Token);
             }
         }
@@ -137,97 +165,153 @@ public class PlasmaEngine
             _logger.LogError(ex, "💥 Fatal error in job processing loop");
             throw;
         }
+        finally
+        {
+            _concurrencyLimiter?.Dispose();
+        }
     }
 
-    public async Task ProcessJobsAsync()
+    public async Task<int> ProcessJobsAsync()
     {
-        _logger.LogInformation("⚡ Processing jobs...");
+        _logger.LogDebug("⚡ Processing jobs...");
+        
+        var jobsProcessed = 0;
+        var maxConcurrentJobs = int.Parse(_configuration["MaxConcurrentJobs"] ?? "5");
         
         if (_jobContext != null)
         {
-            try
+            // Process multiple jobs concurrently up to the limit
+            var tasks = new List<Task<int>>();
+            
+            _logger.LogDebug("Available concurrency slots: {Available}/{Max}", 
+                _concurrencyLimiter.CurrentCount, maxConcurrentJobs);
+            
+            for (int i = 0; i < maxConcurrentJobs; i++)
             {
-                var job = await _jobContext.DequeueJobAsync<Job>();
-                _logger.LogInformation("Dequeued job: {JobId}", job.Id);
-                
-                // Access routing info directly from job fields
-                if (job != null)
+                // Try to acquire a concurrency slot
+                if (await _concurrencyLimiter.WaitAsync(0)) // Non-blocking check
                 {
-                    try
-                    {
-                        // Resolve cluster ID to destination address from YARP cluster configuration
-                        var targetDestination = "";
-                        if (!string.IsNullOrEmpty(job.ClusterId))
-                        {
-                            // First try to get the cluster section
-                            var clusterSection = _configuration.GetSection($"Clusters:{job.ClusterId}");
-                            if (clusterSection.Exists())
-                            {
-                                // Look for the first destination in the cluster
-                                var destinationsSection = clusterSection.GetSection("Destinations");
-                                var firstDestination = destinationsSection.GetChildren().FirstOrDefault();
-                                if (firstDestination != null)
-                                {
-                                    var address = firstDestination.GetValue<string>("Address");
-                                    if (!string.IsNullOrEmpty(address))
-                                    {
-                                        targetDestination = address;
-                                        _logger.LogDebug("Resolved cluster {ClusterId} to destination: {Destination}", job.ClusterId, targetDestination);
-                                    }
-                                }
-                            }
-                            
-                            if (string.IsNullOrEmpty(targetDestination))
-                            {
-                                _logger.LogError("No destination configured for cluster {ClusterId}", job.ClusterId);
-                                await _jobContext.UpdateJobAsync(job, JobStatus.Failed, error: $"No destination configured for cluster {job.ClusterId}");
-                                return;
-                            }
-                        }
-                        else if (!string.IsNullOrEmpty(job.TargetDestination))
-                        {
-                            targetDestination = job.TargetDestination;
-                        }
-                        else
-                        {
-                            _logger.LogError("Job {JobId} has no cluster ID or target destination", job.Id);
-                            await _jobContext.UpdateJobAsync(job, JobStatus.Failed, error: "Job has no cluster ID or target destination");
-                            return;
-                        }
-
-                        var syncPath = job.OriginalPath;
-                        // Build the full sync URL
-                        var syncUrl = $"{targetDestination.TrimEnd('/')}{syncPath}";
-                        
-                        _logger.LogInformation("Routing job to sync API: {SyncUrl} (Cluster: {ClusterId})", syncUrl, job.ClusterId);
-                        _logger.LogDebug("Job parameters: {Parameters}", JsonSerializer.Serialize(job.Parameters));
-                        
-                        // Reverse transforms to reconstruct original request
-                        var originalParameters = await ReverseTransformsAsync(job);
-                        _logger.LogDebug("Parameters after reverse transform: {Parameters}", JsonSerializer.Serialize(originalParameters));
-                        
-                        // Execute the job by dispatching to sync API
-                        await ExecuteJobAsync(job, syncUrl, originalParameters);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Error executing job {JobId}", job.Id);
-                        await _jobContext.UpdateJobAsync(job, JobStatus.Failed, error: $"Job execution error: {ex.Message}");
-                    }
+                    var task = ProcessSingleJobAsync();
+                    tasks.Add(task);
+                    _logger.LogDebug("Started concurrent job task {TaskIndex} (remaining slots: {Remaining})", 
+                        i + 1, _concurrencyLimiter.CurrentCount);
+                }
+                else
+                {
+                    // All concurrency slots are in use
+                    _logger.LogDebug("All concurrency slots in use, stopping at {TaskCount} tasks", tasks.Count);
+                    break;
                 }
             }
-            catch (InvalidOperationException)
+            
+            if (tasks.Any())
             {
-                // No jobs available - this is normal
-                _logger.LogDebug("No jobs available in queue");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error processing job");
+                var results = await Task.WhenAll(tasks);
+                jobsProcessed = results.Sum();
+                
+                if (jobsProcessed > 0)
+                {
+                    _logger.LogInformation("⚡ Processed {JobCount} jobs concurrently", jobsProcessed);
+                }
             }
         }
         
-        await Task.CompletedTask;
+        return jobsProcessed;
+    }
+
+    private async Task<int> ProcessSingleJobAsync()
+    {
+        try
+        {
+            var job = await _jobContext!.DequeueJobAsync<Job>();
+            _logger.LogInformation("Dequeued job: {JobId}", job.Id);
+            
+            // Access routing info directly from job fields
+            if (job != null)
+            {
+                try
+                {
+                    // Resolve cluster ID to destination address from YARP cluster configuration
+                    var targetDestination = "";
+                    if (!string.IsNullOrEmpty(job.ClusterId))
+                    {
+                        // First try to get the cluster section
+                        var clusterSection = _configuration.GetSection($"Clusters:{job.ClusterId}");
+                        if (clusterSection.Exists())
+                        {
+                            // Look for the first destination in the cluster
+                            var destinationsSection = clusterSection.GetSection("Destinations");
+                            var firstDestination = destinationsSection.GetChildren().FirstOrDefault();
+                            if (firstDestination != null)
+                            {
+                                var address = firstDestination.GetValue<string>("Address");
+                                if (!string.IsNullOrEmpty(address))
+                                {
+                                    targetDestination = address;
+                                    _logger.LogDebug("Resolved cluster {ClusterId} to destination: {Destination}", job.ClusterId, targetDestination);
+                                }
+                            }
+                        }
+                        
+                        if (string.IsNullOrEmpty(targetDestination))
+                        {
+                            _logger.LogError("No destination configured for cluster {ClusterId}", job.ClusterId);
+                            await _jobContext.UpdateJobAsync(job, JobStatus.Failed, error: $"No destination configured for cluster {job.ClusterId}");
+                            return 1; // Job was processed (failed)
+                        }
+                    }
+                    else if (!string.IsNullOrEmpty(job.TargetDestination))
+                    {
+                        targetDestination = job.TargetDestination;
+                    }
+                    else
+                    {
+                        _logger.LogError("Job {JobId} has no cluster ID or target destination", job.Id);
+                        await _jobContext.UpdateJobAsync(job, JobStatus.Failed, error: "Job has no cluster ID or target destination");
+                        return 1; // Job was processed (failed)
+                    }
+
+                    var syncPath = job.OriginalPath;
+                    // Build the full sync URL
+                    var syncUrl = $"{targetDestination.TrimEnd('/')}{syncPath}";
+                    
+                    _logger.LogInformation("Routing job to sync API: {SyncUrl} (Cluster: {ClusterId})", syncUrl, job.ClusterId);
+                    _logger.LogDebug("Job parameters: {Parameters}", JsonSerializer.Serialize(job.Parameters));
+                    
+                    // Reverse transforms to reconstruct original request
+                    var originalParameters = await ReverseTransformsAsync(job);
+                    _logger.LogDebug("Parameters after reverse transform: {Parameters}", JsonSerializer.Serialize(originalParameters));
+                    
+                    // Execute the job by dispatching to sync API
+                    await ExecuteJobAsync(job, syncUrl, originalParameters);
+                    return 1; // Job was processed
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error executing job {JobId}", job.Id);
+                    await _jobContext.UpdateJobAsync(job, JobStatus.Failed, error: $"Job execution error: {ex.Message}");
+                    return 1; // Job was processed (failed)
+                }
+            }
+            
+            return job != null ? 1 : 0;
+        }
+        catch (InvalidOperationException)
+        {
+            // No jobs available - this is normal
+            _logger.LogDebug("No jobs available in queue");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing job");
+            return 0;
+        }
+        finally
+        {
+            _concurrencyLimiter.Release();
+            _logger.LogDebug("Released concurrency slot (available: {Available})", _concurrencyLimiter.CurrentCount);
+        }
     }
 
     private async Task ExecuteJobAsync(Job job, string syncUrl, Dictionary<string, object?> originalParameters)
@@ -306,8 +390,8 @@ public class PlasmaEngine
                 }
             }
             
-            // Set a reasonable timeout
-            var timeoutMs = int.Parse(_configuration["HttpTimeoutMs"] ?? "3000000");
+            // Set a reasonable timeout (15 mins)
+            var timeoutMs = int.Parse(_configuration["HttpTimeoutMs"] ?? "9000000");
             using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMs));
             
             // Execute the HTTP request
@@ -372,7 +456,7 @@ public class PlasmaEngine
             {
                 try
                 {
-                    var transform = CreateTransform(mapping.Transform);
+                    var transform = mapping.Transform.CreateTransform();
                     // Create a simple service provider - in production this would be injected
                     var services = new ServiceCollection().BuildServiceProvider();
                     var reversedValue = await transform.ReverseAsync(currentValue, services);
@@ -421,27 +505,5 @@ public class PlasmaEngine
             // Headers should be handled separately, but for now include in body
             parameters[source.Header] = value;
         }
-    }
-
-    private ITransform CreateTransform(TransformConfig transformConfig)
-    {
-        var transformType = Type.GetType(transformConfig.Type);
-        if (transformType == null)
-            throw new InvalidOperationException($"Transform type not found: {transformConfig.Type}");
-
-        var optionsType = transformType.BaseType?.GetGenericArguments().FirstOrDefault();
-        if (optionsType == null)
-            throw new InvalidOperationException($"Transform type {transformConfig.Type} does not have a parameterless constructor or options type");
-        var options = Activator.CreateInstance(optionsType);
-
-        // Copy all properties from the options dictionary to the options object
-        foreach (var kvp in transformConfig.Options)
-        {
-            var prop = optionsType.GetProperty(kvp.Key);
-            if (prop != null && prop.CanWrite)
-                prop.SetValue(options, Convert.ChangeType(kvp.Value.ToString(), prop.PropertyType));
-        }
-
-        return (ITransform)Activator.CreateInstance(transformType, options)!;
     }
 }
