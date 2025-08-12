@@ -56,13 +56,20 @@ public static class TransformExtensions
                         {
                             // Convert the value to the target property type
                             var targetType = Nullable.GetUnderlyingType(prop.PropertyType) ?? prop.PropertyType;
-                            var convertedValue = Convert.ChangeType(kvp.Value, targetType);
+                            object convertedValue;
+                            try
+                            {
+                                convertedValue = Convert.ChangeType(kvp.Value, targetType);
+                            }
+                            catch
+                            {
+                                convertedValue = Convert.ChangeType(kvp.Value.ToString()!, targetType);
+                            }
                             prop.SetValue(options, convertedValue);
                         }
                     }
                 }
-                catch (Exception ex)
-                {
+                catch (Exception ex) {
                     throw new InvalidOperationException(
                         $"Failed to set property {kvp.Key} on transform options of type {optionsType.Name}: {ex.Message}", ex);
                 }
