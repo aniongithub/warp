@@ -8,7 +8,7 @@ namespace Warp.Dilithium.Transforms;
 /// </summary>
 public class VolumeBlobTransformOptions
 {
-    public string VolumePath { get; set; } = "uploads";
+    public string VolumePath { get; set; } = "/uploads";
 }
 
 /// <summary>

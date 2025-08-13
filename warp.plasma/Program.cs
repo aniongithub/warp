@@ -393,6 +393,7 @@ internal sealed class EPS
             // Set a reasonable timeout (15 mins)
             var timeoutMs = int.Parse(_configuration["HttpTimeoutMs"] ?? "9000000");
             using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMs));
+            _httpClient.Timeout = Timeout.InfiniteTimeSpan; // Disable HttpClient timeout, we use our own
             
             // Execute the HTTP request
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();

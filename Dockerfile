@@ -94,7 +94,7 @@ COPY --from=builder /workspace/warp/config ./config
 COPY --from=builder /workspace/warp/spec ./spec
 
 # Copy supervisord configuration
-COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY warp.supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # Only expose the API Gateway port (internal APIs are accessed through the gateway)
 EXPOSE ${WARP_PORT}

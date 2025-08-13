@@ -22,12 +22,25 @@ public class RedisJobContext : JobContextBase
 
     public override async Task EnqueueJobAsync<T>(T job)
     {
+        // TODO: Replace with proper logging
+        Console.WriteLine($"Enqueuing job: {job.Id}");
         if (string.IsNullOrEmpty(job.User?.Id)) throw new ArgumentException("User.Id required");
         var key = JobKey(job.Id, job.Status, job.User.Id);
         var queueKey = QueueKey(job.Status);
+
+        try
+        {
+            Console.WriteLine($"Storing job in Redis with key: {key}");
+            await _db.StringSetAsync(key, SerializeJob(job));
         
-        await _db.StringSetAsync(key, SerializeJob(job));
-        await _db.ListRightPushAsync(queueKey, job.Id);
+            Console.WriteLine($"Pushing job ID to queue: {queueKey}");
+            await _db.ListRightPushAsync(queueKey, job.Id);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error enqueuing job: {ex.Message}");
+            throw;
+        }
     }
 
     public override async Task<T> DequeueJobAsync<T>()

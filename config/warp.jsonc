@@ -218,6 +218,8 @@
       "Name": "RedisAsyncApiHandler",
       "Type": "Warp.Dilithium.Middleware.RedisAsyncApiHandler, warp.dilithium",
       "Options": {
+        "CreateUserIfNotFound": true,
+        "DefaultPermissions": [ "developer", "user" ],
         "ConnectionString": "redis:6379,defaultDatabase=0",
         "DatabaseIndex": 0,
         "Channel": "memoryalpha",
@@ -233,7 +235,7 @@
             "Transform": {
               "Type": "Warp.Dilithium.Transforms.VolumeBlobTransform, warp.dilithium",
               "Options": {
-                "VolumePath": "uploads"
+                "VolumePath": "/uploads"
               }
             }
           }
