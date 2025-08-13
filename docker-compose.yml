@@ -4,7 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: dev
+      target: runtime
     env_file:
       - .env
       - .env.local
@@ -104,7 +104,7 @@ services:
       DEFAULT_IMAGE_MODEL: qwen2.5vl:3b
       OLLAMA_URL: http://ollama:11434
       DB_PATH: /data/enmemoryalpha_db
-      RUN_WARP_PLASMA: "false"  # Set to "false" to disable warp_plasma
+      RUN_WARP_PLASMA: "true"  # Set to "false" to disable warp_plasma
     volumes:
       - rag-cache:/root/.cache
       - ./config:/warp.plasma/config
