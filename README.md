@@ -30,9 +30,113 @@ Middlewares are registered in `appsettings.json` under `PipelineComponents` and 
 - **JwtValidator**: Validates JWT tokens and extracts user info.
 - **ApiKeyValidator**: Validates API keys and loads associated permissions.
 
+#### Asynchronous APIs with Warp & Warp.Plama
+
+Warp can convert existing synchronous APIs into asynchronous APIs very easily. It does this using a middleware that persists incoming requests to a backend like Redis and then using a job-puller + executor called Warp.Plasma that runs inside the synchronous API container.
+
+```mermaid
+flowchart LR
+    subgraph Client
+        A[Incoming Synchronous API Request]
+    end
+
+    subgraph Warp Middleware
+        B["Persist Request to Backend (e.g., Redis)"]
+    end
+
+    F[(Blob Storage)]
+    subgraph Backend
+        C[(Redis Queue)]
+    end
+
+    subgraph API Container
+        D[Warp.Plasma - Job Puller + Executor]
+        E[Process Job via Existing Synchronous API Logic]
+    end
+
+    A --> B --> C
+    B -->|Job Metadata + Blob References| F
+    C --> D
+    D --> E
+    E -->|Response Stored/Returned| C
+    E -->|Binary Output Stored| F
+```
+
+In this configuration, we may also need to store binary blobs that are passed in to the synchronous API between job storage and retrieval. This happens via config in our `RedisAsyncApiHandler` as follows.
+
+```
+{
+  "Name": "RedisAsyncApiHandler",
+  "Type": "Warp.Dilithium.Middleware.RedisAsyncApiHandler, warp.dilithium",
+  "Options": {
+    "CreateUserIfNotFound": true,
+    "DefaultPermissions": [ "developer", "user" ],
+    "ConnectionString": "redis:6379,defaultDatabase=0",
+    "DatabaseIndex": 0,
+    "Channel": "memoryalpha",
+    "Input": {
+      "top_k": {
+        "From": { "Query": "top_k" },
+        "Required": false,
+        "Default": "5"
+      },
+      "x-file-blob": {
+        "From": { "Body": "file" },
+        "Required": true,
+        "Transform": {
+          "Type": "Warp.Dilithium.Transforms.VolumeBlobTransform, warp.dilithium",
+          "Options": {
+            "VolumePath": "/uploads"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+This config uses a shared volume from the host, mounted at /uploads in both containers and `Warp.Dilithium.Transforms.VolumeBlobTransform` to perform the conversion.
+
+Alternatively, here's a version that uses `Warp.Dilithium.Transforms.S3BlobTransform`
+
+```
+{
+  "Name": "RedisAsyncApiHandler",
+  "Type": "Warp.Dilithium.Middleware.RedisAsyncApiHandler, warp.dilithium",
+  "Options": {
+    "CreateUserIfNotFound": true,
+    "DefaultPermissions": [ "developer", "user" ],
+    "ConnectionString": "redis:6379,defaultDatabase=0",
+    "DatabaseIndex": 0,
+    "Channel": "memoryalpha",
+    "Input": {
+      "top_k": {
+        "From": { "Query": "top_k" },
+        "Required": false,
+        "Default": "5"
+      },
+      "x-file-blob": {
+        "From": { "Body": "file" },
+        "Required": true,
+        "Transform": {
+          "Type": "Warp.Dilithium.Transforms.S3BlobTransform, warp.dilithium",
+          "Options": {
+            "BucketName": "my-bucketName-here"
+            "AccessKey": "my-access-key-here"
+            "SecretKey": "my-secret-key-here"
+            "Region": "my-region-here" # defaults to us-east-1
+            "Endpoint": "my-minio-endpoint-here" # Omit if not using minio
+          }
+        }
+      }
+    }
+  }
+}
+```
+
 ### Configuration
 
-All routes, clusters, and middleware are configured in `appsettings.json`. Example:
+All routes, clusters, and middleware are configured in `config/warp.jsonc`. Example:
 
 ```jsonc
 {
@@ -69,6 +173,8 @@ All routes, clusters, and middleware are configured in `appsettings.json`. Examp
   ]
 }
 ```
+
+*Note*: Warp config jsonc files support includes and automatic environment variable expansion to make it easier to organize and pass in secrets. Please see the config files for examples of this usage.
 
 ### Quota & Billing Model
 
