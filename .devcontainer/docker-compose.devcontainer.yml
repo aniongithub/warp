@@ -1,0 +1,8 @@
+services:
+  warp:
+    build:
+      target: dev # Only for devcontainer
+
+  memoryalpha-rag-api:
+    environment:
+      RUN_WARP_PLASMA: "false" # Use plasma in devcontainer, not service container

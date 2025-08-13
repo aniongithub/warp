@@ -1,0 +1,143 @@
+services:
+
+  warp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    env_file:
+      - .env
+      - .env.local
+    environment:
+      - ASPNETCORE_URLS=http://0.0.0.0:5000
+    ports:
+      - "5000:5000"
+      - "5001:5001"
+    volumes:
+      - .:/workspace/warp
+      - ./uploads:/uploads
+    working_dir: /workspace/warp
+    depends_on:
+      - otel-collector
+
+      # Enable any backends you need here
+      # - postgres
+      # - firestore
+      - redis
+    networks:
+      - warp-network
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yml:/etc/otelcol-contrib/config.yaml
+    ports:
+      - "4317:4317"  # OTLP gRPC
+      - "8889:8889"  # Prometheus metrics
+    depends_on:
+      - jaeger
+    networks:
+      - warp-network
+
+  jaeger:
+    image: jaegertracing/opentelemetry-all-in-one:latest
+    ports:
+      - "16686:16686"  # Jaeger UI
+    networks:
+      - warp-network
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+    networks:
+      - warp-network
+  
+  # Enable any backends you need here
+  # postgres:
+  #   image: postgres:16.4
+  #   user: "1000:1000"
+  #   environment:
+  #     POSTGRES_DB: warp
+  #     POSTGRES_USER: warp
+  #     POSTGRES_PASSWORD: warp_dev_password
+  #     PGUSER: vscode
+  #   volumes:
+  #     - ../data/postgres:/var/lib/postgresql/data
+  #   networks:
+  #     - warp-network
+
+  # firestore:
+  #   build:
+  #     context: .
+  #     dockerfile: firestore.Dockerfile
+  #   ports:
+  #     - "8080:8080"  # Firestore emulator UI
+  #     - "4000:4000"  # Firestore Web UI
+  #   networks:
+  #     - warp-network
+
+  warp-publisher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    image: warp-publisher:latest
+
+  memoryalpha-rag-api:
+    build:
+      context: .
+      dockerfile: memoryalpha.Dockerfile
+    ports:
+      - "8000:8000"
+    networks:
+      - warp-network
+    depends_on:
+      - warp-publisher
+      - ollama
+    environment:
+      DEFAULT_MODEL: qwen3:0.6b
+      DEFAULT_IMAGE_MODEL: qwen2.5vl:3b
+      OLLAMA_URL: http://ollama:11434
+      DB_PATH: /data/enmemoryalpha_db
+      RUN_WARP_PLASMA: "false"  # Set to "false" to disable warp_plasma
+    volumes:
+      - rag-cache:/root/.cache
+      - ./config:/warp.plasma/config
+      - ./uploads:/uploads
+
+    entrypoint: >
+      sh -c '
+        /usr/local/bin/entrypoint.sh
+      '
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - warp-network
+    environment:
+      DEFAULT_MODEL: qwen3:0.6b
+      DEFAULT_IMAGE_MODEL: qwen2.5vl:3b      
+    entrypoint: >
+      sh -c '
+        ollama serve &
+        sleep 5
+        ollama pull $$DEFAULT_MODEL
+        ollama pull $$DEFAULT_IMAGE_MODEL
+        wait
+      '
+networks:
+  warp-network:
+    driver: bridge
+
+volumes:
+  rag-cache:
+  ollama-data:

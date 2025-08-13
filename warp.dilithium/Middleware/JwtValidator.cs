@@ -23,6 +23,9 @@ public class JwtValidatorOptions: MiddlewareOptions
     public string? Algorithm { get; set; } // Optional, for extensibility
     public List<string> ValidEmails { get; set; } = new();
     public string? JwksUri { get; set; } // JWKS endpoint for public key discovery
+
+    public bool CreateUserIfNotFound { get; set; } = true;
+    public List<string> DefaultPermissions { get; set; } = new();
 }
 
 public sealed class JwtValidator : MiddlewareBase<JwtValidatorOptions>
@@ -160,6 +163,28 @@ public sealed class JwtValidator : MiddlewareBase<JwtValidatorOptions>
                             }
                             else
                                 Logger.LogDebug("JWT email validation succeeded. Email: {Email}", email);
+                        }
+
+                        // Ensure user exists in DataContext
+                        var user = DataContext.Users.FirstOrDefault(u => u.Email == email);
+                        if (user == null)
+                        {
+                            if (Options.CreateUserIfNotFound)
+                            {
+                                Logger.LogInformation("User with email {Email} not found. Creating new user.", email);
+                                user = DataContext.CreateUser();
+                                user.Email = email;
+                                if (Options.DefaultPermissions != null && Options.DefaultPermissions.Count > 0)
+                                    user.Permissions.AddRange(Options.DefaultPermissions);
+                                await DataContext.SaveAsync(user);
+                            }
+                            else
+                            {
+                                Logger.LogWarning("User with email {Email} not found and CreateUserIfNotFound is false.", email);
+                                context.Response.StatusCode = 403;
+                                await context.Response.WriteAsync("User not found.");
+                                return;
+                            }
                         }
                         await next(context);
                         return;
