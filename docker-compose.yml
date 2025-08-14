@@ -10,11 +10,16 @@ services:
       - .env.local
     environment:
       - ASPNETCORE_URLS=http://0.0.0.0:5000
+
+      - RUN_WARP=true
+      - RUN_PLASMA=true
     ports:
       - "5000:5000"
       - "5001:5001"
     volumes:
-      - .:/workspace/warp
+      - ./config:/workspace/warp/config
+      - ./data:/workspace/warp/data
+      - ./logs:/workspace/warp/logs
       - ./uploads:/uploads
     working_dir: /workspace/warp
     depends_on:
@@ -81,39 +86,21 @@ services:
   #   networks:
   #     - warp-network
 
-  warp-publisher:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: builder
-    image: warp-publisher:latest
-
   memoryalpha-rag-api:
-    build:
-      context: .
-      dockerfile: memoryalpha.Dockerfile
+    image: aniondocker/memoryalpha-rag-api:v0.5.5
     ports:
       - "8000:8000"
     networks:
       - warp-network
     depends_on:
-      - warp-publisher
       - ollama
     environment:
       DEFAULT_MODEL: qwen3:0.6b
       DEFAULT_IMAGE_MODEL: qwen2.5vl:3b
       OLLAMA_URL: http://ollama:11434
       DB_PATH: /data/enmemoryalpha_db
-      RUN_WARP_PLASMA: "true"  # Set to "false" to disable warp_plasma
     volumes:
       - rag-cache:/root/.cache
-      - ./config:/warp.plasma/config
-      - ./uploads:/uploads
-
-    entrypoint: >
-      sh -c '
-        /usr/local/bin/entrypoint.sh
-      '
 
   ollama:
     image: ollama/ollama:latest

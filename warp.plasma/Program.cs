@@ -104,9 +104,14 @@ internal sealed class EPS
         var pollingInterval = _configuration["PollingIntervalMs"];
         var maxConcurrentJobs = _configuration["MaxConcurrentJobs"];
         var idleTimeout = _configuration["IdleTimeoutMs"];
+        var httpTimeout = _configuration["HttpTimeoutMs"];
+        var endpoint = _configuration["Endpoint"] ?? "http://localhost:8000";
         
-        _logger.LogInformation("Configuration - Polling: {PollingInterval}ms, MaxConcurrent: {MaxConcurrent}, IdleTimeout: {IdleTimeout}ms", 
-            pollingInterval, maxConcurrentJobs, idleTimeout);
+        var idleTimeoutDisplay = idleTimeout == "-1" ? "infinite" : $"{idleTimeout}ms";
+        var httpTimeoutDisplay = httpTimeout == "-1" ? "infinite" : $"{httpTimeout}ms";
+        
+        _logger.LogInformation("Configuration - Polling: {PollingInterval}ms, MaxConcurrent: {MaxConcurrent}, IdleTimeout: {IdleTimeout}, HttpTimeout: {HttpTimeout}, Endpoint: {Endpoint}", 
+            pollingInterval, maxConcurrentJobs, idleTimeoutDisplay, httpTimeoutDisplay, endpoint);
         
         await Task.CompletedTask;
     }
@@ -139,17 +144,24 @@ internal sealed class EPS
                 }
                 else
                 {
-                    // Check for idle timeout
-                    var idleDuration = DateTime.UtcNow - _lastJobProcessedAt;
-                    if (idleDuration.TotalMilliseconds > idleTimeoutMs)
+                    // Check for idle timeout (-1 means infinite)
+                    if (idleTimeoutMs != -1)
                     {
-                        _logger.LogInformation("💤 Idle timeout reached ({IdleMs}ms), shutting down...", idleTimeoutMs);
-                        break;
+                        var idleDuration = DateTime.UtcNow - _lastJobProcessedAt;
+                        if (idleDuration.TotalMilliseconds > idleTimeoutMs)
+                        {
+                            _logger.LogInformation("💤 Idle timeout reached ({IdleMs}ms), shutting down...", idleTimeoutMs);
+                            break;
+                        }
+                        else
+                        {
+                            _logger.LogDebug("Idle for {IdleMs}ms (timeout: {TimeoutMs}ms)", 
+                                (int)idleDuration.TotalMilliseconds, idleTimeoutMs);
+                        }
                     }
                     else
                     {
-                        _logger.LogDebug("Idle for {IdleMs}ms (timeout: {TimeoutMs}ms)", 
-                            (int)idleDuration.TotalMilliseconds, idleTimeoutMs);
+                        _logger.LogDebug("Idle mode with infinite timeout, waiting for jobs...");
                     }
                 }
                 
@@ -180,26 +192,48 @@ internal sealed class EPS
         
         if (_jobContext != null)
         {
-            // Process multiple jobs concurrently up to the limit
+            // Process jobs one by one, but allow multiple to run concurrently
             var tasks = new List<Task<int>>();
             
-            _logger.LogDebug("Available concurrency slots: {Available}/{Max}", 
-                _concurrencyLimiter.CurrentCount, maxConcurrentJobs);
+            // Only try to dequeue as many jobs as we have available slots
+            var availableSlots = _concurrencyLimiter.CurrentCount;
+            var jobsToTry = Math.Min(maxConcurrentJobs, availableSlots);
             
-            for (int i = 0; i < maxConcurrentJobs; i++)
+            _logger.LogDebug("Available concurrency slots: {Available}/{Max}, will try to dequeue {JobsToTry} jobs", 
+                availableSlots, maxConcurrentJobs, jobsToTry);
+            
+            // Try to dequeue jobs sequentially, but process them concurrently
+            for (int i = 0; i < jobsToTry; i++)
             {
-                // Try to acquire a concurrency slot
-                if (await _concurrencyLimiter.WaitAsync(0)) // Non-blocking check
+                try
                 {
-                    var task = ProcessSingleJobAsync();
-                    tasks.Add(task);
-                    _logger.LogDebug("Started concurrent job task {TaskIndex} (remaining slots: {Remaining})", 
-                        i + 1, _concurrencyLimiter.CurrentCount);
+                    // Try to dequeue a job first
+                    var job = await _jobContext.DequeueJobAsync<Job>();
+                    
+                    // If we got a job, acquire a slot and start processing
+                    if (await _concurrencyLimiter.WaitAsync(0)) // Non-blocking check
+                    {
+                        var task = ProcessSingleJobAsync(job);
+                        tasks.Add(task);
+                        _logger.LogDebug("Started processing job {JobId} (slot {SlotIndex}, remaining slots: {Remaining})", 
+                            job.Id, i + 1, _concurrencyLimiter.CurrentCount);
+                    }
+                    else
+                    {
+                        // No slots available, put the job back (this shouldn't happen with our logic)
+                        _logger.LogWarning("No concurrency slot available for job {JobId}, this shouldn't happen", job.Id);
+                        break;
+                    }
                 }
-                else
+                catch (InvalidOperationException)
                 {
-                    // All concurrency slots are in use
-                    _logger.LogDebug("All concurrency slots in use, stopping at {TaskCount} tasks", tasks.Count);
+                    // No more jobs available
+                    _logger.LogDebug("No more jobs available in queue after dequeuing {JobCount} jobs", tasks.Count);
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error dequeuing job");
                     break;
                 }
             }
@@ -219,63 +253,26 @@ internal sealed class EPS
         return jobsProcessed;
     }
 
-    private async Task<int> ProcessSingleJobAsync()
+    private async Task<int> ProcessSingleJobAsync(Job job)
     {
         try
         {
-            var job = await _jobContext!.DequeueJobAsync<Job>();
-            _logger.LogInformation("Dequeued job: {JobId}", job.Id);
+            _logger.LogInformation("Processing job: {JobId}", job.Id);
             
             // Access routing info directly from job fields
             if (job != null)
             {
                 try
                 {
-                    // Resolve cluster ID to destination address from YARP cluster configuration
-                    var targetDestination = "";
-                    if (!string.IsNullOrEmpty(job.ClusterId))
-                    {
-                        // First try to get the cluster section
-                        var clusterSection = _configuration.GetSection($"Clusters:{job.ClusterId}");
-                        if (clusterSection.Exists())
-                        {
-                            // Look for the first destination in the cluster
-                            var destinationsSection = clusterSection.GetSection("Destinations");
-                            var firstDestination = destinationsSection.GetChildren().FirstOrDefault();
-                            if (firstDestination != null)
-                            {
-                                var address = firstDestination.GetValue<string>("Address");
-                                if (!string.IsNullOrEmpty(address))
-                                {
-                                    targetDestination = address;
-                                    _logger.LogDebug("Resolved cluster {ClusterId} to destination: {Destination}", job.ClusterId, targetDestination);
-                                }
-                            }
-                        }
-                        
-                        if (string.IsNullOrEmpty(targetDestination))
-                        {
-                            _logger.LogError("No destination configured for cluster {ClusterId}", job.ClusterId);
-                            await _jobContext.UpdateJobAsync(job, JobStatus.Failed, error: $"No destination configured for cluster {job.ClusterId}");
-                            return 1; // Job was processed (failed)
-                        }
-                    }
-                    else if (!string.IsNullOrEmpty(job.TargetDestination))
-                    {
-                        targetDestination = job.TargetDestination;
-                    }
-                    else
-                    {
-                        _logger.LogError("Job {JobId} has no cluster ID or target destination", job.Id);
-                        await _jobContext.UpdateJobAsync(job, JobStatus.Failed, error: "Job has no cluster ID or target destination");
-                        return 1; // Job was processed (failed)
-                    }
+                    // Get the configured endpoint
+                    var targetEndpoint = _configuration["Endpoint"] ?? "http://localhost:8000";
+                    _logger.LogDebug("Using configured endpoint: {Endpoint}", targetEndpoint);
 
                     var syncPath = job.OriginalPath;
                     // Build the full sync URL
-                    var syncUrl = $"{targetDestination.TrimEnd('/')}{syncPath}";
+                    var syncUrl = $"{targetEndpoint.TrimEnd('/')}{syncPath}";
                     
-                    _logger.LogInformation("Routing job to sync API: {SyncUrl} (Cluster: {ClusterId})", syncUrl, job.ClusterId);
+                    _logger.LogInformation("Routing job to sync API: {SyncUrl}", syncUrl);
                     _logger.LogDebug("Job parameters: {Parameters}", JsonSerializer.Serialize(job.Parameters));
                     
                     // Reverse transforms to reconstruct original request
@@ -289,8 +286,15 @@ internal sealed class EPS
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Error executing job {JobId}", job.Id);
-                    await _jobContext.UpdateJobAsync(job, JobStatus.Failed, error: $"Job execution error: {ex.Message}");
+                    if (_jobContext != null)
+                        await _jobContext.UpdateJobAsync(job, JobStatus.Failed, error: $"Job execution error: {ex.Message}");
                     return 1; // Job was processed (failed)
+                }
+                finally
+                {
+                    // Only release if we actually processed a job
+                    _concurrencyLimiter.Release();
+                    _logger.LogDebug("Released concurrency slot after processing job (available: {Available})", _concurrencyLimiter.CurrentCount);
                 }
             }
             
@@ -298,19 +302,18 @@ internal sealed class EPS
         }
         catch (InvalidOperationException)
         {
-            // No jobs available - this is normal
-            _logger.LogDebug("No jobs available in queue");
+            // No jobs available - this is normal, release the slot since we didn't use it
+            _concurrencyLimiter.Release();
+            _logger.LogDebug("No jobs available in queue, released unused concurrency slot (available: {Available})", _concurrencyLimiter.CurrentCount);
             return 0;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error processing job");
-            return 0;
-        }
-        finally
-        {
+            // Release the slot since we encountered an error
             _concurrencyLimiter.Release();
-            _logger.LogDebug("Released concurrency slot (available: {Available})", _concurrencyLimiter.CurrentCount);
+            _logger.LogDebug("Released concurrency slot after error (available: {Available})", _concurrencyLimiter.CurrentCount);
+            return 0;
         }
     }
 
@@ -390,9 +393,11 @@ internal sealed class EPS
                 }
             }
             
-            // Set a reasonable timeout (15 mins)
-            var timeoutMs = int.Parse(_configuration["HttpTimeoutMs"] ?? "9000000");
-            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMs));
+            // Set timeout (-1 means infinite)
+            var timeoutMs = int.Parse(_configuration["HttpTimeoutMs"] ?? "900000");
+            using var cts = timeoutMs == -1 
+                ? new CancellationTokenSource() 
+                : new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMs));
             _httpClient.Timeout = Timeout.InfiniteTimeSpan; // Disable HttpClient timeout, we use our own
             
             // Execute the HTTP request

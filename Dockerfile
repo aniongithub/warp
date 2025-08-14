@@ -93,11 +93,17 @@ COPY --from=builder /workspace/warp/config ./config
 # Copy the external OpenAPI specs to the spec directory - this can be overridden by mounting a volume
 COPY --from=builder /workspace/warp/spec ./spec
 
-# Copy supervisord configuration
-COPY warp.supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+# Copy supervisord configuration and entrypoint script
+COPY warp.supervisord.conf /etc/supervisord.conf
+COPY warp-entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Only expose the API Gateway port (internal APIs are accessed through the gateway)
 EXPOSE ${WARP_PORT}
 
-# Set the entry point for the container to use supervisord
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+# Set environment variable defaults
+ENV RUN_WARP=true
+ENV RUN_PLASMA=false
+
+# Set the entry point for the container to use our custom entrypoint
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
