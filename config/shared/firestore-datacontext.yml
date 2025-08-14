@@ -1,0 +1,5 @@
+# Firestore Data Context Configuration
+DataContext:
+  Type: "Warp.Core.Data.Contexts.FirestoreDataContext, warp.core"
+  args:
+    projectId: "${FIRESTORE_PROJECT_ID}"

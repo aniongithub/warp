@@ -1,17 +1,19 @@
 namespace Warp.Core.Helper;
 
 using Microsoft.Extensions.Configuration;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using YamlDotNet.Serialization;
+using YamlDotNet.Serialization.NamingConventions;
+using System.Collections;
+using System.IO;
 
 public static class ConfigurationExtensions
 {
     public static IConfigurationBuilder AddWarpConfiguration(this IConfigurationBuilder builder, string baseName, string baseDirectory = "./config", bool useDevelopmentConfig = true, bool clearExistingSources = false)
     {
         var environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production";
-        var configFile = $"{baseName}.jsonc";
-        var devConfigFile = $"{baseName}.Development.jsonc";
+        var configFile = $"{baseName}.yml";
+        var devConfigFile = $"{baseName}.Development.yml";
 
         // Make baseDirectory absolute if it is relative
         if (!Path.IsPathRooted(baseDirectory))
@@ -24,13 +26,13 @@ public static class ConfigurationExtensions
         // Process includes and merge configurations
         var mergedConfig = ProcessConfigurationWithIncludes(Path.Combine(baseDirectory, configFile), baseDirectory);
         
-        // Create a temporary file with merged configuration
-        var tempConfigFile = Path.GetTempFileName();
+        // Create a temporary YAML file with merged configuration
+        var tempConfigFile = Path.ChangeExtension(Path.GetTempFileName(), ".yml");
         File.WriteAllText(tempConfigFile, mergedConfig);
 
         builder
             .SetBasePath(baseDirectory)
-            .AddJsonFile(tempConfigFile, optional: false, reloadOnChange: false);
+            .AddYamlFile(tempConfigFile, optional: false, reloadOnChange: false);
 
         if (useDevelopmentConfig && environment == "Development")
         {
@@ -38,9 +40,9 @@ public static class ConfigurationExtensions
             if (File.Exists(devConfigPath))
             {
                 var mergedDevConfig = ProcessConfigurationWithIncludes(devConfigPath, baseDirectory);
-                var tempDevConfigFile = Path.GetTempFileName();
+                var tempDevConfigFile = Path.ChangeExtension(Path.GetTempFileName(), ".yml");
                 File.WriteAllText(tempDevConfigFile, mergedDevConfig);
-                builder.AddJsonFile(tempDevConfigFile, optional: true, reloadOnChange: false);
+                builder.AddYamlFile(tempDevConfigFile, optional: true, reloadOnChange: false);
             }
         }
 
@@ -54,38 +56,35 @@ public static class ConfigurationExtensions
 
         var configContent = File.ReadAllText(configFilePath);
         
-        // Parse as JsonNode to handle JSONC (comments)
-        var jsonNode = JsonNode.Parse(configContent, new JsonNodeOptions
+        var deserializer = new DeserializerBuilder()
+            .Build();
+        
+        // Deserialize to object and normalize to string-keyed dictionaries so recursion works everywhere
+        var root = deserializer.Deserialize<object>(configContent);
+        var yamlObject = NormalizeYaml(root) as Dictionary<string, object>;
+        
+        if (yamlObject != null)
         {
-            PropertyNameCaseInsensitive = false
-        }, new JsonDocumentOptions
-        {
-            CommentHandling = JsonCommentHandling.Skip,
-            AllowTrailingCommas = true
-        });
-
-        if (jsonNode is JsonObject rootObject)
-        {
-            ProcessConfigurationRecursively(rootObject, baseDirectory);
+            ProcessConfigurationRecursively(yamlObject, baseDirectory);
         }
 
-        return jsonNode?.ToJsonString(new JsonSerializerOptions 
-        { 
-            WriteIndented = true 
-        }) ?? "{}";
+        var serializer = new SerializerBuilder()
+            .Build();
+        
+        return serializer.Serialize(yamlObject ?? new Dictionary<string, object>());
     }
 
-    private static void ProcessConfigurationRecursively(JsonObject jsonObject, string baseDirectory, int maxIterations = 10)
+    private static void ProcessConfigurationRecursively(Dictionary<string, object> yamlObject, string baseDirectory, int maxIterations = 10)
     {
         for (int iteration = 0; iteration < maxIterations; iteration++)
         {
             bool hasChanges = false;
 
             // First pass: Process environment variables (so they can be used in include paths)
-            hasChanges |= ProcessEnvironmentVariables(jsonObject);
+            hasChanges |= ProcessEnvironmentVariables(yamlObject);
 
             // Second pass: Process includes (which may introduce new env vars to process)
-            hasChanges |= ProcessIncludes(jsonObject, baseDirectory);
+            hasChanges |= ProcessIncludes(yamlObject, baseDirectory);
 
             // If no changes were made in this iteration, we're done
             if (!hasChanges)
@@ -99,13 +98,16 @@ public static class ConfigurationExtensions
         }
     }
 
-    private static bool ProcessIncludes(JsonObject jsonObject, string baseDirectory)
+    private static bool ProcessIncludes(Dictionary<string, object> yamlObject, string baseDirectory)
     {
         var includesToProcess = new List<(string key, string includePath)>();
         bool hasChanges = false;
+        var deserializer = new DeserializerBuilder()
+            .WithNamingConvention(CamelCaseNamingConvention.Instance)
+            .Build();
 
         // Find all include directives
-        foreach (var kvp in jsonObject.ToArray())
+        foreach (var kvp in yamlObject.ToArray())
         {
             if (kvp.Key.StartsWith("$include:", StringComparison.OrdinalIgnoreCase))
             {
@@ -115,7 +117,7 @@ public static class ConfigurationExtensions
                     includesToProcess.Add((kvp.Key, includePath));
                 }
             }
-            else if (kvp.Value is JsonObject nestedObject)
+            else if (kvp.Value is Dictionary<string, object> nestedObject)
             {
                 hasChanges |= ProcessIncludes(nestedObject, baseDirectory);
             }
@@ -131,48 +133,41 @@ public static class ConfigurationExtensions
             if (File.Exists(fullIncludePath))
             {
                 var includeContent = File.ReadAllText(fullIncludePath);
-                var includeNode = JsonNode.Parse(includeContent, new JsonNodeOptions
-                {
-                    PropertyNameCaseInsensitive = false
-                }, new JsonDocumentOptions
-                {
-                    CommentHandling = JsonCommentHandling.Skip,
-                    AllowTrailingCommas = true
-                });
+                var includeRoot = deserializer.Deserialize<object>(includeContent);
+                var includeObject = NormalizeYaml(includeRoot) as Dictionary<string, object>;
 
-                if (includeNode is JsonObject includeObject)
+                if (includeObject != null)
                 {
-                    // Process nested includes in the included file recursively
-                    ProcessIncludes(includeObject, baseDirectory);
+                    // Process nested includes and env vars in the included file recursively
+                    ProcessConfigurationRecursively(includeObject, baseDirectory);
 
                     // Merge the included configuration
                     foreach (var includeKvp in includeObject)
                     {
-                        jsonObject[includeKvp.Key] = includeKvp.Value?.DeepClone();
+                        yamlObject[includeKvp.Key] = includeKvp.Value;
                     }
                     hasChanges = true;
                 }
             }
 
             // Remove the include directive
-            jsonObject.Remove(key);
+            yamlObject.Remove(key);
             hasChanges = true;
         }
 
         return hasChanges;
     }
 
-    private static bool ProcessEnvironmentVariables(JsonObject jsonObject)
+    private static bool ProcessEnvironmentVariables(Dictionary<string, object> yamlObject)
     {
         // Regex to match ${VAR_NAME} or ${VAR_NAME:default_value} patterns
         var envVarRegex = new Regex(@"\$\{([A-Za-z_][A-Za-z0-9_]*?)(?::([^}]*))?\}", RegexOptions.Compiled);
         bool hasChanges = false;
 
-        foreach (var kvp in jsonObject.ToArray())
+        foreach (var kvp in yamlObject.ToArray())
         {
-            if (kvp.Value is JsonValue jsonValue)
+            if (kvp.Value is string stringValue)
             {
-                var stringValue = jsonValue.ToString();
                 if (envVarRegex.IsMatch(stringValue))
                 {
                     var interpolatedValue = envVarRegex.Replace(stringValue, match =>
@@ -184,35 +179,34 @@ public static class ConfigurationExtensions
                         return envValue ?? defaultValue;
                     });
                     
-                    jsonObject[kvp.Key] = JsonValue.Create(interpolatedValue);
+                    yamlObject[kvp.Key] = interpolatedValue;
                     hasChanges = true;
                 }
             }
-            else if (kvp.Value is JsonObject nestedObject)
+            else if (kvp.Value is Dictionary<string, object> nestedObject)
             {
                 hasChanges |= ProcessEnvironmentVariables(nestedObject);
             }
-            else if (kvp.Value is JsonArray jsonArray)
+            else if (kvp.Value is List<object> yamlArray)
             {
-                hasChanges |= ProcessEnvironmentVariablesInArray(jsonArray);
+                hasChanges |= ProcessEnvironmentVariablesInArray(yamlArray);
             }
         }
 
         return hasChanges;
     }
 
-    private static bool ProcessEnvironmentVariablesInArray(JsonArray jsonArray)
+    private static bool ProcessEnvironmentVariablesInArray(List<object> yamlArray)
     {
         var envVarRegex = new Regex(@"\$\{([A-Za-z_][A-Za-z0-9_]*?)(?::([^}]*))?\}", RegexOptions.Compiled);
         bool hasChanges = false;
 
-        for (int i = 0; i < jsonArray.Count; i++)
+        for (int i = 0; i < yamlArray.Count; i++)
         {
-            var item = jsonArray[i];
+            var item = yamlArray[i];
             
-            if (item is JsonValue jsonValue)
+            if (item is string stringValue)
             {
-                var stringValue = jsonValue.ToString();
                 if (envVarRegex.IsMatch(stringValue))
                 {
                     var interpolatedValue = envVarRegex.Replace(stringValue, match =>
@@ -224,20 +218,45 @@ public static class ConfigurationExtensions
                         return envValue ?? defaultValue;
                     });
                     
-                    jsonArray[i] = JsonValue.Create(interpolatedValue);
+                    yamlArray[i] = interpolatedValue;
                     hasChanges = true;
                 }
             }
-            else if (item is JsonObject nestedObject)
+            else if (item is Dictionary<string, object> nestedObject)
             {
                 hasChanges |= ProcessEnvironmentVariables(nestedObject);
             }
-            else if (item is JsonArray nestedArray)
+            else if (item is List<object> nestedArray)
             {
                 hasChanges |= ProcessEnvironmentVariablesInArray(nestedArray);
             }
         }
 
         return hasChanges;
+    }
+
+    // Normalize YamlDotNet default types (Dictionary<object, object>/IList) to Dictionary<string, object>/List<object>
+    private static object NormalizeYaml(object? node)
+    {
+        if (node is IDictionary dict)
+        {
+            var result = new Dictionary<string, object>();
+            foreach (DictionaryEntry entry in dict)
+            {
+                var key = entry.Key?.ToString() ?? string.Empty;
+                result[key] = NormalizeYaml(entry.Value);
+            }
+            return result;
+        }
+        if (node is IEnumerable enumerable && node is not string)
+        {
+            var list = new List<object>();
+            foreach (var item in enumerable)
+            {
+                list.Add(NormalizeYaml(item));
+            }
+            return list;
+        }
+        return node ?? string.Empty;
     }
 }

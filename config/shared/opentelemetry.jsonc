@@ -1,5 +1,0 @@
-{
-  "OpenTelemetry": {
-    "Endpoint": "${OTEL_ENDPOINT}"
-  }
-}

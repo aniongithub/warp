@@ -16,5 +16,7 @@
     <PackageReference Include="FirebaseAdmin" Version="3.0.1" />
     <PackageReference Include="Google.Cloud.Firestore" Version="3.8.0" />
     <PackageReference Include="StackExchange.Redis" Version="2.8.16" />
+    <PackageReference Include="YamlDotNet" Version="16.3.0" />
+    <PackageReference Include="NetEscapades.Configuration.Yaml" Version="3.1.0" />
   </ItemGroup>
 </Project>
