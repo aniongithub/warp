@@ -105,12 +105,13 @@ internal sealed class EPS
         var maxConcurrentJobs = _configuration["MaxConcurrentJobs"];
         var idleTimeout = _configuration["IdleTimeoutMs"];
         var httpTimeout = _configuration["HttpTimeoutMs"];
+        var endpoint = _configuration["Endpoint"] ?? "http://localhost:8000";
         
         var idleTimeoutDisplay = idleTimeout == "-1" ? "infinite" : $"{idleTimeout}ms";
         var httpTimeoutDisplay = httpTimeout == "-1" ? "infinite" : $"{httpTimeout}ms";
         
-        _logger.LogInformation("Configuration - Polling: {PollingInterval}ms, MaxConcurrent: {MaxConcurrent}, IdleTimeout: {IdleTimeout}, HttpTimeout: {HttpTimeout}", 
-            pollingInterval, maxConcurrentJobs, idleTimeoutDisplay, httpTimeoutDisplay);
+        _logger.LogInformation("Configuration - Polling: {PollingInterval}ms, MaxConcurrent: {MaxConcurrent}, IdleTimeout: {IdleTimeout}, HttpTimeout: {HttpTimeout}, Endpoint: {Endpoint}", 
+            pollingInterval, maxConcurrentJobs, idleTimeoutDisplay, httpTimeoutDisplay, endpoint);
         
         await Task.CompletedTask;
     }
@@ -263,53 +264,15 @@ internal sealed class EPS
             {
                 try
                 {
-                    // Resolve cluster ID to destination address from YARP cluster configuration
-                    var targetDestination = "";
-                    if (!string.IsNullOrEmpty(job.ClusterId))
-                    {
-                        // First try to get the cluster section
-                        var clusterSection = _configuration.GetSection($"Clusters:{job.ClusterId}");
-                        if (clusterSection.Exists())
-                        {
-                            // Look for the first destination in the cluster
-                            var destinationsSection = clusterSection.GetSection("Destinations");
-                            var firstDestination = destinationsSection.GetChildren().FirstOrDefault();
-                            if (firstDestination != null)
-                            {
-                                var address = firstDestination.GetValue<string>("Address");
-                                if (!string.IsNullOrEmpty(address))
-                                {
-                                    targetDestination = address;
-                                    _logger.LogDebug("Resolved cluster {ClusterId} to destination: {Destination}", job.ClusterId, targetDestination);
-                                }
-                            }
-                        }
-                        
-                        if (string.IsNullOrEmpty(targetDestination))
-                        {
-                            _logger.LogError("No destination configured for cluster {ClusterId}", job.ClusterId);
-                            if (_jobContext != null)
-                                await _jobContext.UpdateJobAsync(job, JobStatus.Failed, error: $"No destination configured for cluster {job.ClusterId}");
-                            return 1; // Job was processed (failed)
-                        }
-                    }
-                    else if (!string.IsNullOrEmpty(job.TargetDestination))
-                    {
-                        targetDestination = job.TargetDestination;
-                    }
-                    else
-                    {
-                        _logger.LogError("Job {JobId} has no cluster ID or target destination", job.Id);
-                        if (_jobContext != null)
-                            await _jobContext.UpdateJobAsync(job, JobStatus.Failed, error: "Job has no cluster ID or target destination");
-                        return 1; // Job was processed (failed)
-                    }
+                    // Get the configured endpoint
+                    var targetEndpoint = _configuration["Endpoint"] ?? "http://localhost:8000";
+                    _logger.LogDebug("Using configured endpoint: {Endpoint}", targetEndpoint);
 
                     var syncPath = job.OriginalPath;
                     // Build the full sync URL
-                    var syncUrl = $"{targetDestination.TrimEnd('/')}{syncPath}";
+                    var syncUrl = $"{targetEndpoint.TrimEnd('/')}{syncPath}";
                     
-                    _logger.LogInformation("Routing job to sync API: {SyncUrl} (Cluster: {ClusterId})", syncUrl, job.ClusterId);
+                    _logger.LogInformation("Routing job to sync API: {SyncUrl}", syncUrl);
                     _logger.LogDebug("Job parameters: {Parameters}", JsonSerializer.Serialize(job.Parameters));
                     
                     // Reverse transforms to reconstruct original request

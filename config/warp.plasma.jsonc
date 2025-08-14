@@ -1,10 +1,7 @@
 {
   // Warp Plasma Job Processor Configuration
   // This file supports includes and environment variable interpolation
-  
-  // We need cluster definitions for sync API dispatch
-  "$include:clusters": "shared/clusters.jsonc",
-  
+
   "Logging": {
     "LogLevel": {
       "Default": "Information",
@@ -28,6 +25,9 @@
     "Database": 0,
     "Channel": "memoryalpha"
   },
+  
+  // Target API endpoint for job execution
+  "Endpoint": "http://memoryalpha-rag-api:8000",
   
   // Job processor behavior
   "Processor": {
