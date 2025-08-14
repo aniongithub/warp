@@ -89,7 +89,7 @@ services:
   #     - warp-network
 
   memoryalpha-rag-api:
-    image: aniondocker/memoryalpha-rag-api:v0.5.5
+    image: aniondocker/memoryalpha-rag-api:${MEMORYALPHA_RAG_API_VERSION}
     ports:
       - "8000:8000"
     networks:

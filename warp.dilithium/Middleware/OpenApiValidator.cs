@@ -7,6 +7,9 @@ using Microsoft.OpenApi.Readers;
 using Microsoft.OpenApi.Validations;
 using Microsoft.OpenApi;
 using System.Text.Json;
+using System.Net.Http;
+using System.Text;
+using System.Text.RegularExpressions;
 using Warp.Core.Data;
 using Warp.Core.Middleware;
 
@@ -15,6 +18,7 @@ namespace Warp.Dilithium.Middleware;
 public class OpenApiValidatorOptions : MiddlewareOptions
 {
     public string SpecFile { get; set; } = "openapi.json";
+    public string? SpecUri { get; set; }
 }
 
 public sealed class OpenApiValidator : MiddlewareBase<OpenApiValidatorOptions>
@@ -24,13 +28,42 @@ public sealed class OpenApiValidator : MiddlewareBase<OpenApiValidatorOptions>
     public OpenApiValidator(string name, ILogger logger, IDataContext context, OpenApiValidatorOptions options)
         : base(name, logger, context, options)
     {
-        using var stream = File.OpenRead(options.SpecFile);
         var reader = new OpenApiStreamReader();
-        _openApiDoc = reader.Read(stream, out var diagnostic);
+        OpenApiDiagnostic diagnostic;
+
+        if (!string.IsNullOrWhiteSpace(options.SpecUri))
+        {
+            using var http = new HttpClient();
+            var bytes = http.GetByteArrayAsync(options.SpecUri).GetAwaiter().GetResult();
+            using var stream = PrepareOpenApiStreamFromBytes(bytes);
+            _openApiDoc = reader.Read(stream, out diagnostic);
+        }
+        else
+        {
+            var bytes = File.ReadAllBytes(options.SpecFile);
+            using var stream = PrepareOpenApiStreamFromBytes(bytes);
+            _openApiDoc = reader.Read(stream, out diagnostic);
+        }
         if (diagnostic.Errors.Count > 0)
         {
             logger.LogWarning($"OpenAPI spec loaded with errors: {string.Join(", ", diagnostic.Errors.Select(e => e.Message))}");
         }
+    }
+
+    // HACK: OpenApiStreamReader doesn't support OpenAPI 3.1.x. If present, downgrade to 3.0.3 before parsing.
+    private static MemoryStream PrepareOpenApiStreamFromBytes(byte[] bytes)
+    {
+        var text = Encoding.UTF8.GetString(bytes);
+        var jsonPattern = "\"openapi\"\\s*:\\s*\"3\\.1(\\.\\d+)?\"";
+        var yamlPattern = "^\\s*openapi:\\s*3\\.1(\\.\\d+)?\\s*$";
+
+        if (Regex.IsMatch(text, jsonPattern))
+            text = Regex.Replace(text, jsonPattern, "\"openapi\": \"3.0.3\"");
+
+        if (Regex.IsMatch(text, yamlPattern, RegexOptions.Multiline))
+            text = Regex.Replace(text, yamlPattern, "openapi: 3.0.3", RegexOptions.Multiline);
+
+        return new MemoryStream(Encoding.UTF8.GetBytes(text));
     }
 
     protected override async Task InvokeAsync(HttpContext context, RequestDelegate next)
