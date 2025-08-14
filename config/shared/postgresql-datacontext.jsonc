@@ -1,8 +1,0 @@
-{
-    "DataContext": {
-        "Type": "Warp.Core.Data.Contexts.PostgreSqlDataContext, warp.core",
-        "args": {
-          "connectionString": "${POSTGRESQL_CONNECTION_STRING}"
-        }
-    }
-}

@@ -1,0 +1,3 @@
+# OpenTelemetry Configuration
+OpenTelemetry:
+  Endpoint: "${OTEL_ENDPOINT}"

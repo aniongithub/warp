@@ -111,7 +111,6 @@ coverage/
 data/
 
 # Ignore generated OpenAPI specs
-warp.apis.admin.yml
-warp.apis.developer.yml
 uploads
 Untitled-1
+spec/
