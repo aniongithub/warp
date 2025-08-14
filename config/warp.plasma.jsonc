@@ -18,7 +18,7 @@
   "PollingIntervalMs": 2000,
   "MaxConcurrentJobs": 10, // Maximum number of jobs to process concurrently
   
-  // Timeouts for idle and HTTP requests, 15 mins
+  // Timeouts for idle and HTTP requests, 15 mins (use -1 for infinite)
   "IdleTimeoutMs": 900000,
   "HttpTimeoutMs": 900000,
   
