@@ -1,0 +1,17 @@
+{
+    "Name": "ApiKeyOrJwtKeyValidator",
+    "Type": "Warp.Dilithium.Middleware.OrMiddleware, warp.dilithium",
+    "Options": {
+    "Middleware2": {
+        "Name": "JwtValidator",
+        "Type": "Warp.Dilithium.Middleware.JwtValidator, warp.dilithium",
+        "Options": {
+        "JwksUri": "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
+        }
+    },
+    "Middleware1":     {
+        "Name": "ApiKeyValidator",
+        "Type": "Warp.Dilithium.Middleware.ApiKeyValidator, warp.dilithium"
+    }
+    }
+}

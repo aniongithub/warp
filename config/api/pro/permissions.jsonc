@@ -1,0 +1,7 @@
+{
+    "Name": "ProPermissionsChecker",
+    "Type": "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium",
+    "Options": {
+    "RequiredPermissions": [ "pro" ]
+    }
+}

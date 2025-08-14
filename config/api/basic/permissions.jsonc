@@ -1,0 +1,7 @@
+{
+    "Name": "BasicPermissionsChecker",
+    "Type": "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium",
+    "Options": {
+    "RequiredPermissions": [ "user" ]
+    }
+}

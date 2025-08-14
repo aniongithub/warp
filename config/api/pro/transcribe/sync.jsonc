@@ -1,0 +1,15 @@
+{
+    "ClusterId": "transcribe_cluster",
+    "Match": {
+        "Path": "/api/pro/transcribe/"
+    },
+    "Transforms": [
+        { "PathRemovePrefix": "/api" },
+        { "PathRemovePrefix": "/pro" }
+    ],
+    "Metadata": {
+        "Preprocess": "OpenTelemetryStart,ApiKeyOrJwtKeyValidator,ProRateLimiter,ProQuotaChecker",
+        "Predispatch": "TranscribeOpenApiValidator",
+        "Postprocess": "OpenTelemetryEnd"
+    }
+}

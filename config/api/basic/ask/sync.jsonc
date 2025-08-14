@@ -1,0 +1,19 @@
+{
+    "Routes": {
+        "memoryalpha_basic_ask": {
+            "ClusterId": "memoryalpha_cluster",
+            "Match": {
+                "Path": "/api/basic/ask/"
+            },
+            "Transforms": [
+                { "PathRemovePrefix": "/api" },
+                { "PathRemovePrefix": "/basic" }
+            ],
+            "Metadata": {
+                "Preprocess": "OpenTelemetryStart,ApiKeyOrJwtKeyValidator,BasicRateLimiter,BasicQuotaChecker",
+                "Predispatch": "MemoryAlphaAskOpenApiValidator",
+                "Postprocess": "OpenTelemetryEnd"
+            }
+        }
+    }
+}

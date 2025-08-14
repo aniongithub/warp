@@ -1,0 +1,7 @@
+{
+    "Name": "BasicRateLimiter",
+    "Type": "Warp.Middleware.RateLimiter, warp",
+    "Options": {
+    "RateLimitHz": 2.0
+    }
+}

@@ -107,17 +107,35 @@ public static class ConfigurationExtensions
         // Find all include directives
         foreach (var kvp in jsonObject.ToArray())
         {
-            if (kvp.Key.StartsWith("$include:", StringComparison.OrdinalIgnoreCase))
+            if (kvp.Key.StartsWith("$include:", StringComparison.OrdinalIgnoreCase) || 
+                kvp.Key == "$include")
             {
                 var includePath = kvp.Value?.ToString();
                 if (!string.IsNullOrEmpty(includePath))
                 {
-                    includesToProcess.Add((kvp.Key, includePath));
+                    // Check if this is a wildcard include
+                    if (includePath.Contains('*'))
+                    {
+                        var wildcardIncludes = ProcessWildcardInclude(kvp.Key, includePath, baseDirectory);
+                        foreach (var (wildcardKey, wildcardPath) in wildcardIncludes)
+                        {
+                            includesToProcess.Add((wildcardKey, wildcardPath));
+                        }
+                    }
+                    else
+                    {
+                        includesToProcess.Add((kvp.Key, includePath));
+                    }
                 }
             }
             else if (kvp.Value is JsonObject nestedObject)
             {
                 hasChanges |= ProcessIncludes(nestedObject, baseDirectory);
+            }
+            else if (kvp.Value is JsonArray jsonArray)
+            {
+                // Process includes within arrays
+                hasChanges |= ProcessIncludesInArray(jsonArray, baseDirectory);
             }
         }
 
@@ -142,13 +160,28 @@ public static class ConfigurationExtensions
 
                 if (includeNode is JsonObject includeObject)
                 {
-                    // Process nested includes in the included file recursively
-                    ProcessIncludes(includeObject, baseDirectory);
+                    // Process nested includes and environment variables in the included file recursively
+                    ProcessConfigurationRecursively(includeObject, baseDirectory);
 
-                    // Merge the included configuration
-                    foreach (var includeKvp in includeObject)
+                    // Check if this is a direct object include or named include
+                    if (key == "$include")
                     {
-                        jsonObject[includeKvp.Key] = includeKvp.Value?.DeepClone();
+                        // Direct merge - includes all properties from the file
+                        DeepMergeJsonObjects(jsonObject, includeObject);
+                    }
+                    else if (key.StartsWith("$include:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Named include - extract target property name after "$include:"
+                        var targetKey = key.Substring("$include:".Length);
+                        if (!string.IsNullOrEmpty(targetKey))
+                        {
+                            jsonObject[targetKey] = includeObject.DeepClone();
+                        }
+                        else
+                        {
+                            // Fallback to direct merge if no target key specified
+                            DeepMergeJsonObjects(jsonObject, includeObject);
+                        }
                     }
                     hasChanges = true;
                 }
@@ -159,6 +192,158 @@ public static class ConfigurationExtensions
             hasChanges = true;
         }
 
+        return hasChanges;
+    }
+
+    private static List<(string key, string path)> ProcessWildcardInclude(string originalKey, string wildcardPath, string baseDirectory)
+    {
+        var results = new List<(string key, string path)>();
+        
+        // Convert wildcard pattern to full path
+        var fullWildcardPath = Path.IsPathRooted(wildcardPath) 
+            ? wildcardPath 
+            : Path.Combine(baseDirectory, wildcardPath);
+            
+        var directory = Path.GetDirectoryName(fullWildcardPath);
+        var pattern = Path.GetFileName(fullWildcardPath);
+        
+        if (string.IsNullOrEmpty(directory) || string.IsNullOrEmpty(pattern) || !Directory.Exists(directory))
+            return results;
+            
+        // Create regex pattern from wildcard pattern to extract the match portion
+        var regexPattern = "^" + Regex.Escape(pattern).Replace("\\*", "(.*)") + "$";
+        var regex = new Regex(regexPattern, RegexOptions.IgnoreCase);
+            
+        var matchingFiles = Directory.GetFiles(directory, pattern, SearchOption.TopDirectoryOnly);
+        
+        foreach (var filePath in matchingFiles)
+        {
+            var fileName = Path.GetFileName(filePath);
+            var match = regex.Match(fileName);
+            var wildcardMatch = match.Success && match.Groups.Count > 1 ? match.Groups[1].Value : fileName;
+            
+            if (originalKey == "$include")
+            {
+                // For direct includes, just add the file path
+                results.Add((originalKey, filePath));
+            }
+            else if (originalKey.StartsWith("$include:", StringComparison.OrdinalIgnoreCase))
+            {
+                // For named includes, check if it has () placeholder
+                var targetKeyPart = originalKey.Substring("$include:".Length);
+                
+                if (targetKeyPart.Contains("()"))
+                {
+                    // Replace () with the wildcard match portion
+                    var actualKey = "$include:" + targetKeyPart.Replace("()", wildcardMatch);
+                    results.Add((actualKey, filePath));
+                }
+                else
+                {
+                    // No placeholder, use original key (this will merge all files into same property)
+                    results.Add((originalKey, filePath));
+                }
+            }
+        }
+        
+        return results;
+    }
+
+    private static bool ProcessIncludesInArray(JsonArray jsonArray, string baseDirectory)
+    {
+        bool hasChanges = false;
+        
+        for (int i = jsonArray.Count - 1; i >= 0; i--) // Process backwards to handle replacements
+        {
+            var item = jsonArray[i];
+            
+            if (item is JsonObject itemObject)
+            {
+                // Check if this object has an include directive
+                if (itemObject.ContainsKey("$include"))
+                {
+                    var includePath = itemObject["$include"]?.ToString();
+                    if (!string.IsNullOrEmpty(includePath))
+                    {
+                        if (includePath.Contains('*'))
+                        {
+                            // Handle wildcard includes in arrays
+                            var wildcardIncludes = ProcessWildcardInclude("$include", includePath, baseDirectory);
+                            
+                            // Remove the original include object
+                            jsonArray.RemoveAt(i);
+                            
+                            // Add all wildcard matches at the same position
+                            int insertIndex = i;
+                            foreach (var (_, wildcardPath) in wildcardIncludes)
+                            {
+                                if (File.Exists(wildcardPath))
+                                {
+                                    var includeContent = File.ReadAllText(wildcardPath);
+                                    var includeNode = JsonNode.Parse(includeContent, new JsonNodeOptions
+                                    {
+                                        PropertyNameCaseInsensitive = false
+                                    }, new JsonDocumentOptions
+                                    {
+                                        CommentHandling = JsonCommentHandling.Skip,
+                                        AllowTrailingCommas = true
+                                    });
+
+                                    if (includeNode is JsonObject includeObject)
+                                    {
+                                        // Process nested includes and environment variables recursively
+                                        ProcessConfigurationRecursively(includeObject, baseDirectory);
+                                        
+                                        // Insert the included content
+                                        jsonArray.Insert(insertIndex++, includeObject.DeepClone());
+                                        hasChanges = true;
+                                    }
+                                }
+                            }
+                        }
+                        else
+                        {
+                            var fullIncludePath = Path.IsPathRooted(includePath) 
+                                ? includePath 
+                                : Path.Combine(baseDirectory, includePath);
+
+                            if (File.Exists(fullIncludePath))
+                            {
+                                var includeContent = File.ReadAllText(fullIncludePath);
+                                var includeNode = JsonNode.Parse(includeContent, new JsonNodeOptions
+                                {
+                                    PropertyNameCaseInsensitive = false
+                                }, new JsonDocumentOptions
+                                {
+                                    CommentHandling = JsonCommentHandling.Skip,
+                                    AllowTrailingCommas = true
+                                });
+
+                                if (includeNode is JsonObject includeObject)
+                                {
+                                    // Process nested includes and environment variables recursively
+                                    ProcessConfigurationRecursively(includeObject, baseDirectory);
+                                    
+                                    // Replace the include object with the included content
+                                    jsonArray[i] = includeObject.DeepClone();
+                                    hasChanges = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    // Process includes within this object
+                    hasChanges |= ProcessIncludes(itemObject, baseDirectory);
+                }
+            }
+            else if (item is JsonArray nestedArray)
+            {
+                hasChanges |= ProcessIncludesInArray(nestedArray, baseDirectory);
+            }
+        }
+        
         return hasChanges;
     }
 
@@ -239,5 +424,38 @@ public static class ConfigurationExtensions
         }
 
         return hasChanges;
+    }
+
+    private static void DeepMergeJsonObjects(JsonObject target, JsonObject source)
+    {
+        foreach (var kvp in source)
+        {
+            if (target.ContainsKey(kvp.Key))
+            {
+                // Key exists in target, check if both are objects for deep merge
+                if (target[kvp.Key] is JsonObject targetObject && kvp.Value is JsonObject sourceObject)
+                {
+                    DeepMergeJsonObjects(targetObject, sourceObject);
+                }
+                else if (target[kvp.Key] is JsonArray targetArray && kvp.Value is JsonArray sourceArray)
+                {
+                    // For arrays, append source items to target (you could change this behavior)
+                    foreach (var item in sourceArray)
+                    {
+                        targetArray.Add(item?.DeepClone());
+                    }
+                }
+                else
+                {
+                    // Different types or primitive values - overwrite with source
+                    target[kvp.Key] = kvp.Value?.DeepClone();
+                }
+            }
+            else
+            {
+                // Key doesn't exist in target, add it
+                target[kvp.Key] = kvp.Value?.DeepClone();
+            }
+        }
     }
 }

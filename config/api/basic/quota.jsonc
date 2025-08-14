@@ -1,0 +1,9 @@
+{
+    "Name": "BasicQuotaChecker",
+    "Type": "Warp.Middleware.QuotaChecker, warp",
+    "Options": {
+    "QuotaName": "basic_quota",
+    "QuotaUsage": 1.0,
+    "DefaultQuota": 10.0
+    }
+}

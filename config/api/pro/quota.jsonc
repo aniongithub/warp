@@ -1,0 +1,10 @@
+{
+    "Name": "ProQuotaChecker",
+    "Type": "Warp.Middleware.QuotaChecker, warp",
+    "Options": {
+    "QuotaName": "pro_quota",
+    "QuotaUsage": 1.0,
+    "QuotaType": "postpaid",
+    "CreateQuotaIfNotFound": true
+    }
+}

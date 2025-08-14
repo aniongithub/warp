@@ -1,0 +1,7 @@
+{
+    "Name": "ProRateLimiter",
+    "Type": "Warp.Middleware.RateLimiter, warp",
+    "Options": {
+    "RateLimitHz": 10.0
+    }
+}

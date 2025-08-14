@@ -1,0 +1,16 @@
+{
+    "ClusterId": "transcribe_async_cluster", // See notes for this cluster, it is local-only
+    "Match": {
+        "Path": "async/api/pro/transcribe/"
+    },
+    "Transforms": [
+        { "PathRemovePrefix": "/async" },
+        { "PathRemovePrefix": "/api" },
+        { "PathRemovePrefix": "/pro" }
+    ],
+    "Metadata": {
+        "Preprocess": "OpenTelemetryStart,ApiKeyOrJwtKeyValidator,ProRateLimiter,ProQuotaChecker",
+        "Predispatch": "MemoryAlphaOpenApiValidator,RedisAsyncApiHandler",
+        "Postprocess": "OpenTelemetryEnd"
+    }
+}
