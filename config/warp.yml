@@ -136,7 +136,7 @@ PipelineComponents:
   - Name: "MemoryAlphaOpenApiValidator"
     Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
     Options:
-      SpecFile: "spec/memoryalpha-rag-api-spec.json"
+      SpecUri: "https://github.com/aniongithub/memoryalpha-rag-api/releases/download/${MEMORYALPHA_RAG_API_VERSION}/memoryalpha-rag-api-spec.json"
       ApplyOn:
         - "Sync"
         - "AsyncSubmit"
