@@ -20,7 +20,9 @@ ReverseProxy:
   Routes:
     $include: "routes/admin.yml"
     $include: "routes/developer.yml"
-    $include: "routes/memoryalpha.yml"
+    
+    $include: "routes/basic/memoryalpha.yml"
+    $include: "routes/pro/memoryalpha.yml"
 
 Kestrel:
   Endpoints:
