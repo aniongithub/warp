@@ -1,0 +1,28 @@
+memoryalpha_basic:
+  ClusterId: "memoryalpha_cluster"
+  Match:
+    Path: "/api/basic/{**catch-all}"
+  Transforms:
+    - PathRemovePrefix: "/api"
+    - PathRemovePrefix: "/basic"
+  Metadata:
+    Preprocess:
+      $include:
+        - middlewares/OpenTelemetryStart.yml
+        - middlewares/ApiKeyOrJwtValidator.yml
+      BasicRateLimiter:
+        Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
+        Options:
+          RateLimitHz: 2.0
+      BasicQuotaChecker:
+        Type: "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium"
+        Options:
+          QuotaName: "basic_quota"
+          QuotaUsage: 1.0
+          DefaultQuota: 10.0
+
+    Predispatch:
+      $include: middlewares/MemoryAlphaOpenApiValidator.yml
+
+    Postprocess:
+      $include: middlewares/OpenTelemetryEnd.yml

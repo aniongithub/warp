@@ -1,12 +1,4 @@
 # Warp Plasma Job Processor Configuration
-# This file supports includes and environment variable interpolation
-
-Logging:
-  LogLevel:
-    Default: "Information"
-    Microsoft: "Warning"
-    Microsoft.Hosting.Lifetime: "Information"
-    Warp.Plasma: "Debug"
 
 # Job processing engine configuration
 PollingIntervalMs: 2000
@@ -23,7 +15,7 @@ Redis:
   Channel: "memoryalpha"
 
 # Target API endpoint for job execution
-Endpoint: "${WARP_PLASMA_ENDPOINT}"
+Endpoint: "http://memoryalpha-rag-api:8000"
 
 # Job processor behavior
 Processor:

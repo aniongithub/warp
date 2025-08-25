@@ -13,8 +13,6 @@ services:
 
       - RUN_WARP=true
       - RUN_PLASMA=true
-
-      - WARP_PLASMA_ENDPOINT=http://memoryalpha-rag-api:8000
     ports:
       - "5000:5000"
       - "5001:5001"

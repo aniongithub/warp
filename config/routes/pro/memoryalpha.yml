@@ -1,0 +1,84 @@
+memoryalpha_pro:
+  ClusterId: "memoryalpha_cluster"
+  Timeout: "00:05:00"
+  Match:
+    Path: "/api/pro/{**catch-all}"
+  Transforms:
+    - PathRemovePrefix: "/api"
+    - PathRemovePrefix: "/pro"
+  Metadata:
+    Preprocess:
+      $include:
+        - middlewares/OpenTelemetryStart.yml
+        - middlewares/ApiKeyOrJwtValidator.yml
+      "ProRateLimiter":
+        Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
+        Options:
+          RateLimitHz: 10.0
+      "ProQuotaChecker":
+        Type: "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium"
+        Options:
+          QuotaName: "pro_quota"
+          QuotaUsage: 1.0
+          QuotaType: "postpaid"
+          CreateQuotaIfNotFound: true
+    Predispatch:
+      $include: middlewares/MemoryAlphaOpenApiValidator.yml
+    Postprocess:
+      $include: middlewares/OpenTelemetryEnd.yml
+
+memoryalpha_pro_async:
+  ClusterId: "memoryalpha_cluster"
+  Timeout: "00:05:00"
+  Match:
+    Path: "async/api/pro/{**catch-all}"
+  Transforms:
+    - PathRemovePrefix: "/async"
+    - PathRemovePrefix: "/api"
+    - PathRemovePrefix: "/pro"
+    - RequestHeader: "X-Async-Channel"
+      Set: "memoryalpha"
+  Metadata:
+    Preprocess:
+      $include:
+        - middlewares/OpenTelemetryStartAsync.yml
+        - middlewares/ApiKeyOrJwtValidator.yml
+      "ProRateLimiter":
+        Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
+        Options:
+          RateLimitHz: 10.0
+      "ProQuotaChecker":
+        Type: "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium"
+        Options:
+          QuotaName: "pro_quota"
+          QuotaUsage: 1.0
+          QuotaType: "postpaid"
+          CreateQuotaIfNotFound: true
+    Predispatch:
+      $include: middlewares/MemoryAlphaOpenApiValidator.yml
+      "MemoryAlphaAsyncApiHandler":
+        Type: "Warp.Dilithium.Middleware.RedisAsyncApiHandler, warp.dilithium"
+        Options:
+          CreateUserIfNotFound: true
+          DefaultPermissions:
+            - "developer"
+            - "user"
+          ConnectionString: "redis:6379,defaultDatabase=0"
+          DatabaseIndex: 0
+          Channel: "MemoryAlpha"
+          Input:
+            top_k:
+              From:
+                Query: "top_k"
+              Required: false
+              Default: "5"
+            x-file-blob:
+              From:
+                Body: "file"
+              Required: true
+              Transform:
+                Type: "Warp.Dilithium.Transforms.VolumeBlobTransform, warp.dilithium"
+                Options:
+                  VolumePath: "/uploads"
+    Postprocess:
+      $include: middlewares/OpenTelemetryEnd.yml

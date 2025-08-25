@@ -55,7 +55,7 @@ public static class ConfigurationExtensions
             throw new FileNotFoundException($"Configuration file not found: {configFilePath}");
 
         var configContent = File.ReadAllText(configFilePath);
-        
+                
         var deserializer = new DeserializerBuilder()
             .Build();
         
@@ -100,7 +100,7 @@ public static class ConfigurationExtensions
 
     private static bool ProcessIncludes(Dictionary<string, object> yamlObject, string baseDirectory)
     {
-        var includesToProcess = new List<(string key, string includePath)>();
+        var includesToProcess = new List<(string key, string? targetKey, string includePath)>();
         bool hasChanges = false;
         var deserializer = new DeserializerBuilder()
             .WithNamingConvention(CamelCaseNamingConvention.Instance)
@@ -109,12 +109,46 @@ public static class ConfigurationExtensions
         // Find all include directives
         foreach (var kvp in yamlObject.ToArray())
         {
-            if (kvp.Key.StartsWith("$include:", StringComparison.OrdinalIgnoreCase))
+            if (kvp.Key.StartsWith("$include", StringComparison.OrdinalIgnoreCase))
             {
-                var includePath = kvp.Value?.ToString();
-                if (!string.IsNullOrEmpty(includePath))
+                if (kvp.Value is List<object> includeArray)
                 {
-                    includesToProcess.Add((kvp.Key, includePath));
+                    // Handle array format: $include: ["file1", "file2"]
+                    foreach (var item in includeArray)
+                    {
+                        var includePath = item?.ToString();
+                        if (!string.IsNullOrEmpty(includePath))
+                        {
+                            string? targetKey = null;
+                            if (kvp.Key.Length > "$include".Length && kvp.Key["$include".Length] == ':')
+                            {
+                                targetKey = kvp.Key.Substring("$include:".Length);
+                                if (string.IsNullOrEmpty(targetKey))
+                                {
+                                    targetKey = null;
+                                }
+                            }
+                            includesToProcess.Add((kvp.Key, targetKey, includePath));
+                        }
+                    }
+                }
+                else
+                {
+                    // Handle single include format: $include: "file"
+                    var includePath = kvp.Value?.ToString();
+                    if (!string.IsNullOrEmpty(includePath))
+                    {
+                        string? targetKey = null;
+                        if (kvp.Key.Length > "$include".Length && kvp.Key["$include".Length] == ':')
+                        {
+                            targetKey = kvp.Key.Substring("$include:".Length);
+                            if (string.IsNullOrEmpty(targetKey))
+                            {
+                                targetKey = null;
+                            }
+                        }
+                        includesToProcess.Add((kvp.Key, targetKey, includePath));
+                    }
                 }
             }
             else if (kvp.Value is Dictionary<string, object> nestedObject)
@@ -124,7 +158,7 @@ public static class ConfigurationExtensions
         }
 
         // Process includes
-        foreach (var (key, includePath) in includesToProcess)
+        foreach (var (key, targetKey, includePath) in includesToProcess)
         {
             var fullIncludePath = Path.IsPathRooted(includePath) 
                 ? includePath 
@@ -142,9 +176,18 @@ public static class ConfigurationExtensions
                     ProcessConfigurationRecursively(includeObject, baseDirectory);
 
                     // Merge the included configuration
-                    foreach (var includeKvp in includeObject)
+                    if (targetKey == null)
                     {
-                        yamlObject[includeKvp.Key] = includeKvp.Value;
+                        // Direct merge: $include: "file"
+                        foreach (var includeKvp in includeObject)
+                        {
+                            yamlObject[includeKvp.Key] = includeKvp.Value;
+                        }
+                    }
+                    else
+                    {
+                        // Keyed merge: $include:admin: "file"
+                        yamlObject[targetKey] = includeObject;
                     }
                     hasChanges = true;
                 }
