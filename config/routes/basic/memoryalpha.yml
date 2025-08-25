@@ -7,8 +7,9 @@ memoryalpha_basic:
     - PathRemovePrefix: "/basic"
   Metadata:
     Preprocess:
-      $include: middlewares/OpenTelemetryStart.yml
-      $include: middlewares/ApiKeyOrJwtValidator.yml
+      $include:
+        - middlewares/OpenTelemetryStart.yml
+        - middlewares/ApiKeyOrJwtValidator.yml
       BasicRateLimiter:
         Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
         Options:
@@ -21,13 +22,7 @@ memoryalpha_basic:
           DefaultQuota: 10.0
 
     Predispatch:
-      MemoryAlphaOpenApiValidator:
-        Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
-        Options:
-          SpecUri: "https://github.com/aniongithub/memoryalpha-rag-api/releases/download/${MEMORYALPHA_RAG_API_VERSION}/memoryalpha-rag-api-spec.json"
-          ApplyOn:
-            - "Sync"
-            - "AsyncSubmit"
+      $include: middlewares/MemoryAlphaOpenApiValidator.yml
 
     Postprocess:
       $include: middlewares/OpenTelemetryEnd.yml

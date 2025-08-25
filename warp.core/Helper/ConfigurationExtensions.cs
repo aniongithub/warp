@@ -55,9 +55,6 @@ public static class ConfigurationExtensions
             throw new FileNotFoundException($"Configuration file not found: {configFilePath}");
 
         var configContent = File.ReadAllText(configFilePath);
-        
-        // Preprocess to handle multiple $include directives at the same level
-        configContent = PreprocessMultipleIncludes(configContent);
                 
         var deserializer = new DeserializerBuilder()
             .Build();
@@ -304,83 +301,5 @@ public static class ConfigurationExtensions
             return list;
         }
         return node ?? string.Empty;
-    }
-
-    private static string PreprocessMultipleIncludes(string yamlContent)
-    {
-        var lines = yamlContent.Split('\n');
-        var result = new List<string>();
-        var pendingIncludes = new Dictionary<int, List<string>>(); // indentLevel -> list of includes
-        
-        for (int i = 0; i < lines.Length; i++)
-        {
-            var line = lines[i];
-            var trimmedLine = line.TrimStart();
-            var indentLevel = line.Length - trimmedLine.Length;
-            
-            // Only process direct includes: $include: "file" (not keyed includes like $include:key: "file")
-            if (trimmedLine.StartsWith("$include: ", StringComparison.OrdinalIgnoreCase))
-            {
-                // Direct include: $include: "file"
-                var includePath = trimmedLine.Substring("$include: ".Length).Trim().Trim('"', '\'');
-                
-                if (!pendingIncludes.ContainsKey(indentLevel))
-                {
-                    pendingIncludes[indentLevel] = new List<string>();
-                }
-                pendingIncludes[indentLevel].Add(includePath);
-            }
-            else
-            {
-                // Before adding this line, check if we need to flush any pending includes
-                // that are at a deeper or equal indentation level
-                var levelsToFlush = pendingIncludes.Keys.Where(level => level >= indentLevel).ToList();
-                foreach (var level in levelsToFlush.OrderBy(l => l))
-                {
-                    var includes = pendingIncludes[level];
-                    if (includes.Count > 1)
-                    {
-                        // Multiple includes at this level - convert to array
-                        var indent = new string(' ', level);
-                        result.Add($"{indent}$include:");
-                        foreach (var include in includes)
-                        {
-                            result.Add($"{indent}  - \"{include}\"");
-                        }
-                    }
-                    else if (includes.Count == 1)
-                    {
-                        // Single include at this level
-                        var indent = new string(' ', level);
-                        result.Add($"{indent}$include: \"{includes[0]}\"");
-                    }
-                    pendingIncludes.Remove(level);
-                }
-                
-                result.Add(line);
-            }
-        }
-        
-        // Flush any remaining pending includes at the end
-        foreach (var level in pendingIncludes.Keys.OrderBy(l => l))
-        {
-            var includes = pendingIncludes[level];
-            if (includes.Count > 1)
-            {
-                var indent = new string(' ', level);
-                result.Add($"{indent}$include:");
-                foreach (var include in includes)
-                {
-                    result.Add($"{indent}  - \"{include}\"");
-                }
-            }
-            else if (includes.Count == 1)
-            {
-                var indent = new string(' ', level);
-                result.Add($"{indent}$include: \"{includes[0]}\"");
-            }
-        }
-        
-        return string.Join('\n', result);
     }
 }

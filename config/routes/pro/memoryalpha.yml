@@ -8,8 +8,9 @@ memoryalpha_pro:
     - PathRemovePrefix: "/pro"
   Metadata:
     Preprocess:
-      $include: middlewares/OpenTelemetryStart.yml
-      $include: middlewares/ApiKeyOrJwtValidator.yml
+      $include:
+        - middlewares/OpenTelemetryStart.yml
+        - middlewares/ApiKeyOrJwtValidator.yml
       "ProRateLimiter":
         Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
         Options:
@@ -39,14 +40,9 @@ memoryalpha_pro_async:
       Set: "memoryalpha"
   Metadata:
     Preprocess:
-      OpenTelemetryStart:
-        Type: "Warp.Dilithium.Middleware.OpenTelemetryStart, warp.dilithium"
-        Options:
-          tagHeaders:
-            - "x-api-key"
-            - "x-request-id"
-            - "x-async-channel"
-      $include: middlewares/ApiKeyOrJwtValidator.yml
+      $include:
+        - middlewares/OpenTelemetryStartAsync.yml
+        - middlewares/ApiKeyOrJwtValidator.yml
       "ProRateLimiter":
         Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
         Options:
@@ -59,13 +55,7 @@ memoryalpha_pro_async:
           QuotaType: "postpaid"
           CreateQuotaIfNotFound: true
     Predispatch:
-      MemoryAlphaOpenApiValidator:
-        Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
-        Options:
-          SpecUri: "https://github.com/aniongithub/memoryalpha-rag-api/releases/download/${MEMORYALPHA_RAG_API_VERSION}/memoryalpha-rag-api-spec.json"
-          ApplyOn:
-            - "Sync"
-            - "AsyncSubmit"
+      $include: middlewares/MemoryAlphaOpenApiValidator.yml
       "MemoryAlphaAsyncApiHandler":
         Type: "Warp.Dilithium.Middleware.RedisAsyncApiHandler, warp.dilithium"
         Options:

@@ -1,6 +1,7 @@
 # Warp Gateway Configuration
-$include: "shared/${DATACONTEXT_IMPL}-datacontext.yml"
-$include: "shared/opentelemetry.yml"
+$include: 
+  - "shared/${DATACONTEXT_IMPL}-datacontext.yml"
+  - "shared/opentelemetry.yml"
 
 ReverseProxy:
   Clusters:
@@ -18,11 +19,11 @@ ReverseProxy:
           Address: "http://memoryalpha-rag-api:8000"
   
   Routes:
-    $include: "routes/admin.yml"
-    $include: "routes/developer.yml"
-    
-    $include: "routes/basic/memoryalpha.yml"
-    $include: "routes/pro/memoryalpha.yml"
+    $include: 
+      - "routes/admin.yml"
+      - "routes/developer.yml"
+      - "routes/basic/memoryalpha.yml"
+      - "routes/pro/memoryalpha.yml"
 
 Kestrel:
   Endpoints:
