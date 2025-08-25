@@ -21,9 +21,12 @@ var dataContext = config.GetSection("DataContext").CreateFromConfiguration();
 builder.Services.AddSingleton(dataContext);
 builder.Services.AddRequestTimeouts();
 
-// Load pipeline definitions
+// Load pipeline definitions from both PipelineComponents and inline route definitions
 var pipelineSection = config.GetSection("PipelineComponents");
 var pipelineComponents = new List<MiddlewareDescriptor>();
+var routePhaseOverrides = new Dictionary<string, Dictionary<string, string>>(); // routeId -> phase -> middleware list
+
+// Load global pipeline components (for backward compatibility)
 foreach (var section in pipelineSection.GetChildren())
 {
     var descriptor = new MiddlewareDescriptor
@@ -33,6 +36,60 @@ foreach (var section in pipelineSection.GetChildren())
         Options = section.GetSection("Options")
     };
     pipelineComponents.Add(descriptor);
+}
+
+// Load inline middleware definitions from routes
+var routesSection = config.GetSection("ReverseProxy:Routes");
+foreach (var routeSection in routesSection.GetChildren())
+{
+    var routeId = routeSection.Key;
+    var metadataSection = routeSection.GetSection("Metadata");
+    
+    foreach (var phaseSection in metadataSection.GetChildren())
+    {
+        var phaseName = phaseSection.Key;
+        if (phaseName is "Preprocess" or "Predispatch" or "Postdispatch" or "Postprocess")
+        {
+            // Check if this phase has inline middleware definitions (dict format)
+            if (phaseSection.GetChildren().Any(child => child.GetChildren().Any()))
+            {
+                // Dictionary format - load middleware definitions
+                var middlewareNames = new List<string>();
+                foreach (var middlewareSection in phaseSection.GetChildren())
+                {
+                    var middlewareName = middlewareSection.Key;
+                    var middlewareType = middlewareSection.GetValue<string>("Type");
+                    
+                    if (!string.IsNullOrEmpty(middlewareType))
+                    {
+                        var descriptor = new MiddlewareDescriptor
+                        {
+                            Name = middlewareName,
+                            Type = middlewareType,
+                            Options = middlewareSection.GetSection("Options")
+                        };
+                        
+                        // Only add if not already defined globally
+                        if (!pipelineComponents.Any(pc => pc.Name == middlewareName))
+                        {
+                            pipelineComponents.Add(descriptor);
+                        }
+                        
+                        middlewareNames.Add(middlewareName);
+                    }
+                }
+                
+                // Store the override for this route and phase
+                if (middlewareNames.Count > 0)
+                {
+                    if (!routePhaseOverrides.ContainsKey(routeId))
+                        routePhaseOverrides[routeId] = new Dictionary<string, string>();
+                    
+                    routePhaseOverrides[routeId][phaseName] = string.Join(",", middlewareNames);
+                }
+            }
+        }
+    }
 }
 
 // Register YARP reverse proxy from config
@@ -178,10 +235,33 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
         
     // Register PostTransformMiddlewareRunner for YARP post-transform (predispatch) extensibility
     builder.Services.AddSingleton<Yarp.ReverseProxy.Forwarder.IPostTransformMiddleware>(
-        sp => new PostTransformMiddlewareRunner(componentMap)
+        sp => new PostTransformMiddlewareRunner(componentMap, routePhaseOverrides, sp.GetRequiredService<ILoggerFactory>().CreateLogger<PostTransformMiddlewareRunner>())
     );
 }
 #pragma warning restore ASP0000 // Do not call 'IServiceCollection.BuildServiceProvider' in 'ConfigureServices'
+
+// Helper method to extract middleware names from metadata (supports both string and dict formats)
+static string[] GetMiddlewareNames(IReadOnlyDictionary<string, string>? metadata, string phaseName, Dictionary<string, Dictionary<string, string>> routePhaseOverrides, string? routeId = null)
+{
+    if (metadata == null)
+        return Array.Empty<string>();
+
+    // Check if we have a route-specific override
+    if (!string.IsNullOrEmpty(routeId) && 
+        routePhaseOverrides.TryGetValue(routeId, out var phaseOverrides) &&
+        phaseOverrides.TryGetValue(phaseName, out var overrideValue))
+    {
+        return overrideValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
+    // Fall back to standard metadata
+    if (metadata.TryGetValue(phaseName, out var phase))
+    {
+        return phase.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
+    return Array.Empty<string>();
+}
 
 // Now build the app
 var app = builder.Build();
@@ -204,9 +284,8 @@ app.MapReverseProxy(proxyPipeline =>
     {
         var proxyFeature = context.Features.Get<Yarp.ReverseProxy.Model.IReverseProxyFeature>();
         var metadata = proxyFeature?.Route?.Config?.Metadata;
-        var preprocess = metadata != null && metadata.TryGetValue("Preprocess", out var pre) && pre is string preStr
-            ? preStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            : Array.Empty<string>();
+        var routeId = proxyFeature?.Route?.Config?.RouteId;
+        var preprocess = GetMiddlewareNames(metadata, "Preprocess", routePhaseOverrides, routeId);
         foreach (var name in preprocess.Reverse())
         {
             if (componentMap.TryGetValue(name, out var middleware))
@@ -227,9 +306,8 @@ app.MapReverseProxy(proxyPipeline =>
         await next();
         var proxyFeature = context.Features.Get<Yarp.ReverseProxy.Model.IReverseProxyFeature>();
         var metadata = proxyFeature?.Route?.Config?.Metadata;
-        var postdispatch = metadata != null && metadata.TryGetValue("Postdispatch", out var post) && post is string postStr
-            ? postStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            : Array.Empty<string>();
+        var routeId = proxyFeature?.Route?.Config?.RouteId;
+        var postdispatch = GetMiddlewareNames(metadata, "Postdispatch", routePhaseOverrides, routeId);
         foreach (var name in postdispatch)
         {
             if (componentMap.TryGetValue(name, out var middleware))
@@ -245,9 +323,8 @@ app.MapReverseProxy(proxyPipeline =>
         await next();
         var proxyFeature = context.Features.Get<Yarp.ReverseProxy.Model.IReverseProxyFeature>();
         var metadata = proxyFeature?.Route?.Config?.Metadata;
-        var postprocess = metadata != null && metadata.TryGetValue("Postprocess", out var post) && post is string postStr
-            ? postStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            : Array.Empty<string>();
+        var routeId = proxyFeature?.Route?.Config?.RouteId;
+        var postprocess = GetMiddlewareNames(metadata, "Postprocess", routePhaseOverrides, routeId);
         foreach (var name in postprocess)
         {
             if (componentMap.TryGetValue(name, out var middleware))

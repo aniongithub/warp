@@ -1,0 +1,33 @@
+memoryalpha_basic:
+  ClusterId: "memoryalpha_cluster"
+  Match:
+    Path: "/api/basic/{**catch-all}"
+  Transforms:
+    - PathRemovePrefix: "/api"
+    - PathRemovePrefix: "/basic"
+  Metadata:
+    Preprocess:
+      $include: middlewares/OpenTelemetryStart.yml
+      $include: middlewares/ApiKeyOrJwtValidator.yml
+      BasicRateLimiter:
+        Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
+        Options:
+          RateLimitHz: 2.0
+      BasicQuotaChecker:
+        Type: "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium"
+        Options:
+          QuotaName: "basic_quota"
+          QuotaUsage: 1.0
+          DefaultQuota: 10.0
+
+    Predispatch:
+      MemoryAlphaOpenApiValidator:
+        Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
+        Options:
+          SpecUri: "https://github.com/aniongithub/memoryalpha-rag-api/releases/download/${MEMORYALPHA_RAG_API_VERSION}/memoryalpha-rag-api-spec.json"
+          ApplyOn:
+            - "Sync"
+            - "AsyncSubmit"
+
+    Postprocess:
+      $include: middlewares/OpenTelemetryEnd.yml

@@ -3,10 +3,17 @@ using Yarp.ReverseProxy.Forwarder;
 public class PostTransformMiddlewareRunner : IPostTransformMiddleware
 {
     private readonly IDictionary<string, Func<RequestDelegate, RequestDelegate>> _componentMap;
+    private readonly Dictionary<string, Dictionary<string, string>> _routePhaseOverrides;
+    private readonly ILogger<PostTransformMiddlewareRunner> _logger;
 
-    public PostTransformMiddlewareRunner(IDictionary<string, Func<RequestDelegate, RequestDelegate>> componentMap)
+    public PostTransformMiddlewareRunner(
+        IDictionary<string, Func<RequestDelegate, RequestDelegate>> componentMap,
+        Dictionary<string, Dictionary<string, string>> routePhaseOverrides,
+        ILogger<PostTransformMiddlewareRunner> logger)
     {
         _componentMap = componentMap;
+        _routePhaseOverrides = routePhaseOverrides;
+        _logger = logger;
     }
 
     public async Task InvokeAsync(HttpContext context, HttpRequestMessage proxyRequest)
@@ -16,9 +23,8 @@ public class PostTransformMiddlewareRunner : IPostTransformMiddleware
 
         var proxyFeature = context.Features.Get<Yarp.ReverseProxy.Model.IReverseProxyFeature>();
         var metadata = proxyFeature?.Route?.Config?.Metadata;
-        var predispatch = metadata != null && metadata.TryGetValue("Predispatch", out var pre) && pre is string preStr
-            ? preStr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            : Array.Empty<string>();
+        var routeId = proxyFeature?.Route?.Config?.RouteId;
+        var predispatch = GetMiddlewareNames(metadata, "Predispatch", _routePhaseOverrides, routeId);
         if (predispatch.Length == 0)
             return;
 
@@ -49,5 +55,27 @@ public class PostTransformMiddlewareRunner : IPostTransformMiddleware
             }
         }
         await pipeline(context);
+    }
+
+    private static string[] GetMiddlewareNames(IReadOnlyDictionary<string, string>? metadata, string phaseName, Dictionary<string, Dictionary<string, string>> routePhaseOverrides, string? routeId)
+    {
+        if (metadata == null)
+            return Array.Empty<string>();
+
+        // Check if we have a route-specific override
+        if (!string.IsNullOrEmpty(routeId) && 
+            routePhaseOverrides.TryGetValue(routeId, out var phaseOverrides) &&
+            phaseOverrides.TryGetValue(phaseName, out var overrideValue))
+        {
+            return overrideValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        }
+
+        // Fall back to standard metadata
+        if (metadata.TryGetValue(phaseName, out var phase))
+        {
+            return phase.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        }
+
+        return Array.Empty<string>();
     }
 }

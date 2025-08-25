@@ -56,6 +56,9 @@ public static class ConfigurationExtensions
 
         var configContent = File.ReadAllText(configFilePath);
         
+        // Preprocess to handle multiple $include directives at the same level
+        configContent = PreprocessMultipleIncludes(configContent);
+                
         var deserializer = new DeserializerBuilder()
             .Build();
         
@@ -100,7 +103,7 @@ public static class ConfigurationExtensions
 
     private static bool ProcessIncludes(Dictionary<string, object> yamlObject, string baseDirectory)
     {
-        var includesToProcess = new List<(string key, string includePath)>();
+        var includesToProcess = new List<(string key, string? targetKey, string includePath)>();
         bool hasChanges = false;
         var deserializer = new DeserializerBuilder()
             .WithNamingConvention(CamelCaseNamingConvention.Instance)
@@ -109,12 +112,46 @@ public static class ConfigurationExtensions
         // Find all include directives
         foreach (var kvp in yamlObject.ToArray())
         {
-            if (kvp.Key.StartsWith("$include:", StringComparison.OrdinalIgnoreCase))
+            if (kvp.Key.StartsWith("$include", StringComparison.OrdinalIgnoreCase))
             {
-                var includePath = kvp.Value?.ToString();
-                if (!string.IsNullOrEmpty(includePath))
+                if (kvp.Value is List<object> includeArray)
                 {
-                    includesToProcess.Add((kvp.Key, includePath));
+                    // Handle array format: $include: ["file1", "file2"]
+                    foreach (var item in includeArray)
+                    {
+                        var includePath = item?.ToString();
+                        if (!string.IsNullOrEmpty(includePath))
+                        {
+                            string? targetKey = null;
+                            if (kvp.Key.Length > "$include".Length && kvp.Key["$include".Length] == ':')
+                            {
+                                targetKey = kvp.Key.Substring("$include:".Length);
+                                if (string.IsNullOrEmpty(targetKey))
+                                {
+                                    targetKey = null;
+                                }
+                            }
+                            includesToProcess.Add((kvp.Key, targetKey, includePath));
+                        }
+                    }
+                }
+                else
+                {
+                    // Handle single include format: $include: "file"
+                    var includePath = kvp.Value?.ToString();
+                    if (!string.IsNullOrEmpty(includePath))
+                    {
+                        string? targetKey = null;
+                        if (kvp.Key.Length > "$include".Length && kvp.Key["$include".Length] == ':')
+                        {
+                            targetKey = kvp.Key.Substring("$include:".Length);
+                            if (string.IsNullOrEmpty(targetKey))
+                            {
+                                targetKey = null;
+                            }
+                        }
+                        includesToProcess.Add((kvp.Key, targetKey, includePath));
+                    }
                 }
             }
             else if (kvp.Value is Dictionary<string, object> nestedObject)
@@ -124,7 +161,7 @@ public static class ConfigurationExtensions
         }
 
         // Process includes
-        foreach (var (key, includePath) in includesToProcess)
+        foreach (var (key, targetKey, includePath) in includesToProcess)
         {
             var fullIncludePath = Path.IsPathRooted(includePath) 
                 ? includePath 
@@ -142,9 +179,18 @@ public static class ConfigurationExtensions
                     ProcessConfigurationRecursively(includeObject, baseDirectory);
 
                     // Merge the included configuration
-                    foreach (var includeKvp in includeObject)
+                    if (targetKey == null)
                     {
-                        yamlObject[includeKvp.Key] = includeKvp.Value;
+                        // Direct merge: $include: "file"
+                        foreach (var includeKvp in includeObject)
+                        {
+                            yamlObject[includeKvp.Key] = includeKvp.Value;
+                        }
+                    }
+                    else
+                    {
+                        // Keyed merge: $include:admin: "file"
+                        yamlObject[targetKey] = includeObject;
                     }
                     hasChanges = true;
                 }
@@ -258,5 +304,83 @@ public static class ConfigurationExtensions
             return list;
         }
         return node ?? string.Empty;
+    }
+
+    private static string PreprocessMultipleIncludes(string yamlContent)
+    {
+        var lines = yamlContent.Split('\n');
+        var result = new List<string>();
+        var pendingIncludes = new Dictionary<int, List<string>>(); // indentLevel -> list of includes
+        
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            var trimmedLine = line.TrimStart();
+            var indentLevel = line.Length - trimmedLine.Length;
+            
+            // Only process direct includes: $include: "file" (not keyed includes like $include:key: "file")
+            if (trimmedLine.StartsWith("$include: ", StringComparison.OrdinalIgnoreCase))
+            {
+                // Direct include: $include: "file"
+                var includePath = trimmedLine.Substring("$include: ".Length).Trim().Trim('"', '\'');
+                
+                if (!pendingIncludes.ContainsKey(indentLevel))
+                {
+                    pendingIncludes[indentLevel] = new List<string>();
+                }
+                pendingIncludes[indentLevel].Add(includePath);
+            }
+            else
+            {
+                // Before adding this line, check if we need to flush any pending includes
+                // that are at a deeper or equal indentation level
+                var levelsToFlush = pendingIncludes.Keys.Where(level => level >= indentLevel).ToList();
+                foreach (var level in levelsToFlush.OrderBy(l => l))
+                {
+                    var includes = pendingIncludes[level];
+                    if (includes.Count > 1)
+                    {
+                        // Multiple includes at this level - convert to array
+                        var indent = new string(' ', level);
+                        result.Add($"{indent}$include:");
+                        foreach (var include in includes)
+                        {
+                            result.Add($"{indent}  - \"{include}\"");
+                        }
+                    }
+                    else if (includes.Count == 1)
+                    {
+                        // Single include at this level
+                        var indent = new string(' ', level);
+                        result.Add($"{indent}$include: \"{includes[0]}\"");
+                    }
+                    pendingIncludes.Remove(level);
+                }
+                
+                result.Add(line);
+            }
+        }
+        
+        // Flush any remaining pending includes at the end
+        foreach (var level in pendingIncludes.Keys.OrderBy(l => l))
+        {
+            var includes = pendingIncludes[level];
+            if (includes.Count > 1)
+            {
+                var indent = new string(' ', level);
+                result.Add($"{indent}$include:");
+                foreach (var include in includes)
+                {
+                    result.Add($"{indent}  - \"{include}\"");
+                }
+            }
+            else if (includes.Count == 1)
+            {
+                var indent = new string(' ', level);
+                result.Add($"{indent}$include: \"{includes[0]}\"");
+            }
+        }
+        
+        return string.Join('\n', result);
     }
 }
