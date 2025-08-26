@@ -16,6 +16,11 @@ public abstract class AsyncApiHandlerOptions : MiddlewareOptions
     public Dictionary<string, InputMapping> Input { get; set; } = new();
     public string UserIdHeader { get; set; } = "X-JWT-Email";
     public string Channel { get; set; } = string.Empty;
+    
+    /// <summary>
+    /// Global blob transform configuration applied to all file uploads automatically
+    /// </summary>
+    public Warp.Core.Job.TransformConfig? BlobTransform { get; set; }
 }
 
 public class InputMapping
@@ -328,16 +333,49 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
         };
     }
 
-    // Input extraction logic with transform support
+    // Input extraction logic with automatic extraction of all request data
     private async Task<Dictionary<string, object?>> ExtractInputsAsync(HttpContext context)
     {
         var extractedInputs = new Dictionary<string, object?>();
 
+        // Auto-extract all query parameters
+        foreach (var query in context.Request.Query)
+        {
+            extractedInputs[query.Key] = query.Value.FirstOrDefault();
+        }
+
+        // Auto-extract request body based on content type
+        var contentType = context.Request.ContentType?.Split(';')[0]?.ToLowerInvariant();
+        if (!string.IsNullOrEmpty(contentType))
+        {
+            context.Request.EnableBuffering();
+            
+            switch (contentType)
+            {
+                case "application/json":
+                    await AutoExtractFromJsonBody(context, extractedInputs);
+                    break;
+                case "multipart/form-data":
+                    await AutoExtractFromFormData(context, extractedInputs);
+                    break;
+                case "application/x-www-form-urlencoded":
+                    await AutoExtractFromFormUrlEncoded(context, extractedInputs);
+                    break;
+            }
+            
+            // Reset body position for downstream middleware
+            if (context.Request.Body.CanSeek)
+            {
+                context.Request.Body.Position = 0;
+            }
+        }
+
+        // Apply explicit Input mappings as overrides/transformations
         foreach (var (paramName, mapping) in Options.Input)
         {
             object? value = null;
 
-            // Extract from configured source
+            // Extract from configured source (this can override auto-extracted values)
             if (!string.IsNullOrEmpty(mapping.From.Header))
             {
                 value = context.Request.Headers[mapping.From.Header].FirstOrDefault();
@@ -348,31 +386,32 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
             }
             else if (!string.IsNullOrEmpty(mapping.From.Body))
             {
-                // Enable buffering to allow multiple reads of the request body
-                context.Request.EnableBuffering();
-                
-                var contentType = context.Request.ContentType?.Split(';')[0]?.ToLowerInvariant();
-                
-                switch (contentType)
+                // For body fields, we might have already extracted them, so check first
+                if (extractedInputs.TryGetValue(mapping.From.Body, out var existingValue))
                 {
-                    case "application/json":
-                        value = await ExtractFromJsonBody(context, mapping.From.Body);
-                        break;
-                    case "multipart/form-data":
-                        value = await ExtractFromFormData(context, mapping.From.Body);
-                        break;
-                    case "application/x-www-form-urlencoded":
-                        value = await ExtractFromFormUrlEncoded(context, mapping.From.Body);
-                        break;
-                    default:
-                        throw new NotSupportedException($"Content type '{context.Request.ContentType}' is not supported for body parameter extraction");
+                    value = existingValue;
                 }
-                
-                // Reset body position for downstream middleware
-                if (context.Request.Body.CanSeek)
+                else
                 {
-                    context.Request.Body.Position = 0;
+                    // Fall back to manual extraction for specific field
+                    switch (contentType)
+                    {
+                        case "application/json":
+                            value = await ExtractFromJsonBody(context, mapping.From.Body);
+                            break;
+                        case "multipart/form-data":
+                            value = await ExtractFromFormData(context, mapping.From.Body);
+                            break;
+                        case "application/x-www-form-urlencoded":
+                            value = await ExtractFromFormUrlEncoded(context, mapping.From.Body);
+                            break;
+                    }
                 }
+            }
+            else
+            {
+                // No specific source - use auto-extracted value if available
+                extractedInputs.TryGetValue(paramName, out value);
             }
 
             // Apply default if no value found
@@ -384,7 +423,7 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
                     throw new ArgumentException($"Required parameter '{paramName}' is missing");
             }
 
-            // Apply transform if configured
+            // Apply field-specific transform if configured
             if (mapping.Transform != null && value != null)
             {
                 var transform = mapping.Transform.CreateTransform();
@@ -402,6 +441,120 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
         }
 
         return extractedInputs;
+    }
+
+    /// <summary>
+    /// Automatically extract all fields from JSON body
+    /// </summary>
+    private async Task AutoExtractFromJsonBody(HttpContext context, Dictionary<string, object?> extractedInputs)
+    {
+        using var reader = new StreamReader(context.Request.Body, leaveOpen: true);
+        var json = await reader.ReadToEndAsync();
+        
+        if (string.IsNullOrEmpty(json))
+            return;
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            
+            // Extract all top-level properties from JSON
+            foreach (var property in root.EnumerateObject())
+            {
+                object? value = property.Value.ValueKind switch
+                {
+                    JsonValueKind.String => property.Value.GetString(),
+                    JsonValueKind.Number => property.Value.GetDecimal(),
+                    JsonValueKind.True => true,
+                    JsonValueKind.False => false,
+                    JsonValueKind.Null => null,
+                    _ => property.Value.GetRawText()
+                };
+                
+                extractedInputs[property.Name] = value;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to auto-extract JSON body");
+        }
+    }
+
+    /// <summary>
+    /// Automatically extract all fields and files from multipart form data
+    /// </summary>
+    private async Task AutoExtractFromFormData(HttpContext context, Dictionary<string, object?> extractedInputs)
+    {
+        try
+        {
+            var form = await context.Request.ReadFormAsync();
+            
+            // Extract all form fields
+            foreach (var field in form)
+            {
+                extractedInputs[field.Key] = field.Value.FirstOrDefault();
+            }
+            
+            // Extract and transform all file uploads if BlobTransform is configured
+            if (Options.BlobTransform != null)
+            {
+                var blobTransform = Options.BlobTransform!.CreateTransform();
+                
+                foreach (var file in form.Files)
+                {
+                    if (file.Length > 0)
+                    {
+                        Logger.LogDebug("Auto-transforming file upload: {FileName} (field: {FieldName})", 
+                            file.FileName, file.Name);
+                        
+                        var transformedValue = await blobTransform.ForwardAsync(file);
+                        extractedInputs[file.Name] = transformedValue;
+                    }
+                }
+            }
+            else
+            {
+                // No transform configured - just include file info
+                foreach (var file in form.Files)
+                {
+                    if (file.Length > 0)
+                    {
+                        extractedInputs[file.Name] = new
+                        {
+                            FileName = file.FileName,
+                            ContentType = file.ContentType,
+                            Length = file.Length
+                        };
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error auto-extracting multipart form data");
+            throw new ArgumentException("Failed to process multipart form data", ex);
+        }
+    }
+
+    /// <summary>
+    /// Automatically extract all fields from form URL encoded data
+    /// </summary>
+    private async Task AutoExtractFromFormUrlEncoded(HttpContext context, Dictionary<string, object?> extractedInputs)
+    {
+        try
+        {
+            var form = await context.Request.ReadFormAsync();
+            
+            foreach (var field in form)
+            {
+                extractedInputs[field.Key] = field.Value.FirstOrDefault();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to auto-extract form URL encoded data");
+        }
     }
 
     private async Task<object?> ExtractFromJsonBody(HttpContext context, string fieldPath)
