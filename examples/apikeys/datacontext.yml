@@ -1,0 +1,5 @@
+DataContext:
+  # A simple JSON file-based data context for demonstration purposes.
+  Type: "Warp.Core.Data.Contexts.JsonDataContext, warp.core"
+  args:
+    filePath: "data/data.json" # Path to the JSON file storing user data.

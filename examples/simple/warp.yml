@@ -1,0 +1,45 @@
+DataContext:
+  # A simple JSON file-based data context for demonstration purposes.
+  Type: "Warp.Core.Data.Contexts.JsonDataContext, warp.core"
+  args:
+    filePath: "data/data.json" # Path to the JSON file storing user data.
+
+ReverseProxy:
+  Clusters:
+    # All our API clusters are defined here.
+
+    memoryalpha_cluster: # Cluster that forwards requests to the MemoryAlpha RAG API service.
+      Destinations:
+        memoryalpha: # Only a single destination in this cluster.
+          # We can use an environment variable to configure the service address
+          Address: ${MEMORYALPHA_RAG_API_ADDR}
+
+  Routes:
+    memoryalpha:
+      ClusterId: "memoryalpha_cluster" # Route to the MemoryAlpha cluster.
+      Match:
+        Path: "/examples/simple/{**catch-all}" # Non-canonical API path so we can proxy the same service under different routes.
+      Transforms:
+        - PathRemovePrefix: "/examples" # Remove the /examples prefix before forwarding.
+        - PathRemovePrefix: "/simple" # Remove the /simple prefix before forwarding.
+      Metadata: # Middleware configuration for this route.
+        
+        # This section runs when the request first arrives and is matched to this route.
+        Preprocess:
+
+          # This middleware rate-limits requests to 1 per second for users.
+          RateLimiter:
+            Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
+            Options:
+              RateLimitHz: 1.0
+
+        Predispatch:
+          # This section runs after transforms have been applied but before the request is sent to the destination.
+          # Here, we will have the canonical path and headers.
+
+          # This middleware validates requests against the OpenAPI spec for this API.
+          SimpleOpenApiValidator:
+            Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
+            Options:
+              # We can use a uri to load the spec from a remote location, or even from the API itself if it serves its own spec.
+              SpecUri: https://github.com/aniongithub/memoryalpha-rag-api/releases/download/${MEMORYALPHA_RAG_API_VERSION}/memoryalpha-rag-api-spec.json

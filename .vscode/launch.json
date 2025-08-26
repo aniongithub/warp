@@ -59,12 +59,61 @@
                 "ASPNETCORE_ENVIRONMENT": "Development",
                 "FIRESTORE_EMULATOR_HOST": "firestore:8080"
             }
-        }
+        },
+        
+        {
+            "name": "Warp (simple)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp/bin/Debug/net9.0/warp.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "env": {
+                "MEMORYALPHA_RAG_API_ADDR": "http://memoryalpha-rag-api:8000",
+                "WARP_CONFIG_BASE_DIR": "./examples/simple" // This is all we need to configure
+                // The rest of the configuration is fully config driven via warp.yml
+            }
+        },
+
+        {
+            "name": "DevApi (apikeys)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp.apis.developer/bin/Debug/net9.0/warp.apis.developer.dll",
+            "env": {
+                "WARP_CONFIG_BASE_DIR": "./examples/apikeys"
+            },
+            "cwd": "${workspaceFolder}",
+        },
+        {
+            "name": "Warp (apikeys)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp/bin/Debug/net9.0/warp.dll",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "MEMORYALPHA_RAG_API_ADDR": "http://memoryalpha-rag-api:8000",
+                "WARP_CONFIG_BASE_DIR": "./examples/apikeys" // This is all we need to configure
+                // The rest of the configuration is fully config driven via warp.yml
+            }
+        },
     ],
     "compounds": [
         {
             "name": "Warp API Gateway",
-            "configurations": ["Warp", "DevApi", "AdminApi", "Plasma"]
+            "configurations": ["Warp", "DevApi", "AdminApi", "Plasma"]            
+        },
+        {
+            "name": "Warp Simple Example",
+            "configurations": ["Warp (simple)"]
+        },
+        {
+            "name": "Warp ApiKeys Example",
+            "configurations": ["Warp (apikeys)", "DevApi (apikeys)"]
         }
     ]
 }

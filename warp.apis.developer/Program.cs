@@ -8,7 +8,8 @@ using Warp.Core.Helper;
 var builder = WebApplication.CreateBuilder(args);
 var assemblyName = Assembly.GetExecutingAssembly().GetName().Name ?? "warp.apis.developer";
 
-builder.Configuration.AddWarpConfiguration(assemblyName, clearExistingSources: true);
+builder.Configuration.AddWarpConfiguration(assemblyName, clearExistingSources: true,
+    baseDirectory: Environment.GetEnvironmentVariable("WARP_CONFIG_BASE_DIR") ?? "./config");
 
 var dataContextSection = builder.Configuration.GetSection("DataContext");
 IDataContext dataContext;
@@ -93,21 +94,36 @@ app.MapPost("/developer/api-keys", async (HttpContext context, [FromServices] ID
 
     var apiKey = dataContext.CreateApiKey();
     apiKey.Id = Guid.NewGuid().ToString();
-    apiKey.Key = Guid.NewGuid().ToString();
+    apiKey.Key = $"warp_{Guid.NewGuid().ToString().Replace("-", "")}"; // Better key format
     apiKey.Owner = email;
     apiKey.IsActive = true;
-    // Set permissions from X-Permissions header, or default to ["free"]
+    
+    // Use the user's actual permissions (set by PermissionsChecker middleware)
+    var userPermissions = user.Permissions ?? new List<string>();
+    
+    // Allow override via X-Permissions header, but only if it's a subset of user permissions
     var permsHeader = context.Request.Headers["X-Permissions"].FirstOrDefault();
-    apiKey.Permissions = !string.IsNullOrWhiteSpace(permsHeader)
-        ? permsHeader.Split(',').Select(p => p.Trim()).Where(p => !string.IsNullOrEmpty(p)).ToList()
-        : new List<string> { "free" };
+    if (!string.IsNullOrWhiteSpace(permsHeader))
+    {
+        var requestedPermissions = permsHeader.Split(',').Select(p => p.Trim()).Where(p => !string.IsNullOrEmpty(p)).ToList();
+        // Only allow permissions that the user actually has
+        apiKey.Permissions = requestedPermissions.Where(p => userPermissions.Contains(p)).ToList();
+        if (!apiKey.Permissions.Any())
+            apiKey.Permissions = userPermissions; // Fallback to user's permissions if none are valid
+    }
+    else
+    {
+        // Default to user's permissions
+        apiKey.Permissions = new List<string>(userPermissions);
+    }
+    
     await dataContext.SaveAsync(apiKey);
 
     return Results.Ok(apiKey);
 })
 .WithTags("API Keys")
 .WithSummary("Create a new API key")
-.WithDescription("Creates a new API key for the authenticated user. The user can have up to 5 active API keys. Permissions can be set via the X-Permissions header (comma-separated), defaults to 'free' if not specified.")
+.WithDescription("Creates a new API key for the authenticated user. The user can have up to 5 active API keys. API key permissions will match the user's permissions (set by the gateway). You can optionally restrict permissions via the X-Permissions header, but only to a subset of the user's permissions.")
 .Produces(200, typeof(object), "application/json")
 .Produces(401, typeof(string), "text/plain")
 .Produces(400, typeof(string), "text/plain");
@@ -133,10 +149,11 @@ app.MapGet("/developer/api-keys", async (HttpContext context, [FromServices] IDa
     {
         var apiKey = dataContext.CreateApiKey();
         apiKey.Id = Guid.NewGuid().ToString();
-        apiKey.Key = Guid.NewGuid().ToString(); // Generate a random key
+        apiKey.Key = $"{Guid.NewGuid().ToString().Replace("-", "")}"; // Better key format
         apiKey.Owner = email;
         apiKey.IsActive = true;
-        apiKey.Permissions = new List<string> { "free" }; // Default permissions
+        // Use the user's actual permissions (from PermissionsChecker middleware)
+        apiKey.Permissions = [.. user.Permissions];
         await dataContext.SaveAsync(apiKey);
         keys.Add(apiKey);
     }
@@ -145,7 +162,7 @@ app.MapGet("/developer/api-keys", async (HttpContext context, [FromServices] IDa
 })
 .WithTags("API Keys")
 .WithSummary("Get all API keys for the authenticated user")
-.WithDescription("Returns all active API keys for the authenticated user. If no keys exist, a default key with 'free' permissions is automatically created.")
+.WithDescription("Returns all active API keys for the authenticated user. If no keys exist, a default key with the user's permissions is automatically created.")
 .Produces(200, typeof(List<object>), "application/json")
 .Produces(401, typeof(string), "text/plain");
 

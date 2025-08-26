@@ -12,8 +12,9 @@ using System.Reflection;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Load configuration from appsettings.json or from a file specified in the WARP_CONFIG_FILE environment variable
-var configBuilder = new ConfigurationBuilder().AddWarpConfiguration("warp");
+// Load configuration from warp.yml
+var configBuilder = new ConfigurationBuilder().AddWarpConfiguration("warp",
+    baseDirectory: Environment.GetEnvironmentVariable("WARP_CONFIG_BASE_DIR") ?? "./config");
 var config = configBuilder.Build();
 
 // Use the extension method to create the DataContext from configuration
