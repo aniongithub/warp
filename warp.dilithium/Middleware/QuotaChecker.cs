@@ -11,8 +11,6 @@ namespace Warp.Dilithium.Middleware
         public string? QuotaName { get; set; }
         public string? QuotaNameHeader { get; set; }
         public List<string> KeyHeaders { get; set; } = new() { "X-JWT-Email", "X-Api-Key" };
-        public bool BlockIfExhausted { get; set; } = true;
-        public float QuotaUsage { get; set; } = 1.0f;
         public bool CreateQuotaIfNotFound { get; set; } = true;
         public float QuotaLimit { get; set; } = 10.0f;
         public string? QuotaLimitHeader { get; set; }
@@ -74,19 +72,19 @@ namespace Warp.Dilithium.Middleware
                 }
             }
 
-            // 4. Check if quota is exhausted based on type
-            // Note: Options.QuotaUsage is the amount to consume, e.g., 1.0 for 1 request
-            float usage = Options.QuotaUsage;
-            bool allowed = true;
+            // 4. Check quota based on type - prepaid blocks when exhausted, postpaid just passes through
             switch (quota.Type)
             {
-                // prepaid quotas have a limit and used amount
                 case "prepaid":
-                    if (quota.Used + usage > quota.Limit)
-                        allowed = false;
+                    if (quota.Used >= quota.Limit)
+                    {
+                        context.Response.StatusCode = 429;
+                        await context.Response.WriteAsync($"Quota exhausted for '{quotaName}'.");
+                        return;
+                    }
                     break;
                 case "postpaid":
-                    // postpaid always allowed, just increment usage
+                    // postpaid always allowed, usage tracking happens in QuotaUpdater
                     break;
                 default:
                     context.Response.StatusCode = 500;
@@ -94,19 +92,13 @@ namespace Warp.Dilithium.Middleware
                     return;
             }
 
-            if (!allowed && Options.BlockIfExhausted)
-            {
-                context.Response.StatusCode = 429;
-                await context.Response.WriteAsync($"Quota exhausted for '{quotaName}'.");
-                return;
-            }
+            // Store quota context for QuotaUpdater middleware to use later
+            context.Items["QuotaChecker.QuotaId"] = quota.Id;
+            context.Items["QuotaChecker.QuotaName"] = quotaName;
+            context.Items["QuotaChecker.Key"] = key;
 
-            // Only increment quota after successful downstream middleware
+            // Continue to next middleware - QuotaUpdater will handle actual consumption
             await next(context);
-
-            // 5. Consume quota (increment Used) if allowed and request succeeded
-            quota.Used += usage;
-            await DataContext.SaveAsync(quota);
         }
 
         private string ResolveKey(HttpContext context)

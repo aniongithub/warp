@@ -115,6 +115,18 @@ ReverseProxy:
               # We can use a uri to load the spec from a remote location, or even from the API itself if it serves its own spec.
               SpecUri: https://github.com/aniongithub/memoryalpha-rag-api/releases/download/${MEMORYALPHA_RAG_API_VERSION}/memoryalpha-rag-api-spec.json
 
+        Postprocess:
+          # This section runs after the response is received from the destination but before it is sent to the client.
+          # Here, we can inspect the response and update quotas or perform instrumentation/logging.
+
+          # This middleware updates the used quota for free users after each successful request.
+          # This ensures that the quota is decremented only for successful requests and can be tracked
+          # correctly for variable usage-based billing.
+          FreeQuotaUpdater:
+            Type: "Warp.Dilithium.Middleware.QuotaUpdater, warp.dilithium"
+            Options:
+              UsageHeader: "X-Quota-Usage" # Our API can return the actual usage in this header (defaults to 1.0 if not present)
+
     # Pro API route with postpaid quota
     memoryalpha_pro:
       ClusterId: "memoryalpha_cluster" # Route to the MemoryAlpha cluster.
