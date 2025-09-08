@@ -14,6 +14,9 @@ builder.Configuration.AddWarpConfiguration(assemblyName, clearExistingSources: t
 var dataContextSection = builder.Configuration.GetSection("DataContext");
 IDataContext dataContext;
 
+var apiSettingsSection = builder.Configuration.GetSection("api_settings");
+var apiKeyPrefix = apiSettingsSection.GetValue<string>("api_key_prefix") ?? "warp_";
+
 // Check if we're running under swagger CLI
 bool isSwaggerGeneration = Environment.GetCommandLineArgs().Any(arg => arg.Contains("swagger")) ||
                           Environment.GetCommandLineArgs().Any(arg => arg.Contains("tofile")) ||
@@ -94,7 +97,7 @@ app.MapPost("/developer/api-keys", async (HttpContext context, [FromServices] ID
 
     var apiKey = dataContext.CreateApiKey();
     apiKey.Id = Guid.NewGuid().ToString();
-    apiKey.Key = $"warp_{Guid.NewGuid().ToString().Replace("-", "")}"; // Better key format
+    apiKey.Key = $"{apiKeyPrefix}{Guid.NewGuid().ToString().Replace("-", "")}"; // Better key format
     apiKey.Owner = email;
     apiKey.IsActive = true;
     

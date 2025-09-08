@@ -7,7 +7,7 @@ This example demonstrates how to use Warp Gateway with API key authentication an
 This example includes:
 
 - **API Key Authentication**: Protected MemoryAlpha API requiring valid API keys
-- **Developer API**: Management interface for creating and managing API keys
+- **Developer API**: End-user accessible management interface for creating and managing API keys
 - **User Permissions**: Role-based access with "developer" permissions required
 - **OpenAPI Validation**: Both APIs validate requests against their specs
 
@@ -16,8 +16,6 @@ This example includes:
 1. **Start the services** using the **"Warp API Gateway"** compound launch configuration in VS Code, which starts:
    - Warp Gateway (port 5000)
    - Developer API (port 5002) 
-   - Admin API (port 5003)
-   - Plasma service
 
    Or run individual services with their respective launch configurations.
 

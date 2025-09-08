@@ -101,6 +101,43 @@
                 // The rest of the configuration is fully config driven via warp.yml
             }
         },
+
+        {
+            "name": "DevApi (quotas)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp.apis.developer/bin/Debug/net9.0/warp.apis.developer.dll",
+            "env": {
+                "WARP_CONFIG_BASE_DIR": "./examples/quotas"
+            },
+            "cwd": "${workspaceFolder}",
+        },
+        {
+            "name": "AdminApi (quotas)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp.apis.admin/bin/Debug/net9.0/warp.apis.admin.dll",
+            "env": {
+                "WARP_CONFIG_BASE_DIR": "./examples/quotas"
+            },
+            "cwd": "${workspaceFolder}",
+        },
+        {
+            "name": "Warp (quotas)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp/bin/Debug/net9.0/warp.dll",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "MEMORYALPHA_RAG_API_ADDR": "http://memoryalpha-rag-api:8000",
+                "WARP_CONFIG_BASE_DIR": "./examples/quotas" // This is all we need to configure
+                // The rest of the configuration is fully config driven via warp.yml
+            }
+        },
+
     ],
     "compounds": [
         {
@@ -114,6 +151,10 @@
         {
             "name": "Warp ApiKeys Example",
             "configurations": ["Warp (apikeys)", "DevApi (apikeys)"]
+        },
+        {
+            "name": "Warp Quotas Example",
+            "configurations": ["Warp (quotas)", "DevApi (quotas)", "AdminApi (quotas)"]
         }
     ]
 }

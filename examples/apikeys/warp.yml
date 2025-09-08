@@ -6,17 +6,18 @@ ReverseProxy:
   Clusters:
     # All our API clusters are defined here.
 
-    memoryalpha_cluster: # Cluster that forwards requests to the MemoryAlpha RAG API service.
-      Destinations:
-        memoryalpha: # Only a single destination in this cluster.
-          # We can use an environment variable to configure the service address
-          Address: ${MEMORYALPHA_RAG_API_ADDR}
-
     # Developer API cluster for managing API keys and user information.
     developer_api_cluster:
       Destinations:
         developer:
           Address: "http://127.0.0.1:5002/"
+
+    # Cluster that forwards requests to the MemoryAlpha RAG API service.
+    memoryalpha_cluster:
+      Destinations:
+        memoryalpha: # Only a single destination in this cluster.
+          # We can use an environment variable to configure the service address
+          Address: ${MEMORYALPHA_RAG_API_ADDR}
 
   Routes:
 

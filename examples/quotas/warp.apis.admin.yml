@@ -1,0 +1,8 @@
+# Our Warp Admin API configuration for the quotas example.
+
+$include: "datacontext.yml" # Use an include to share configuration definitions between multiple files
+
+Kestrel:
+  Endpoints:
+    Internal:
+      Url: "http://127.0.0.1:5003"
