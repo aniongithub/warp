@@ -26,10 +26,8 @@ ReverseProxy:
         
         # This section runs when the request first arrives and is matched to this route.
         Preprocess:
-
           # This middleware rate-limits requests to 1 per second for users.
-          RateLimiter:
-            Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
+          - Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
             Options:
               RateLimitHz: 1.0
 
@@ -38,8 +36,7 @@ ReverseProxy:
           # Here, we will have the canonical path and headers.
 
           # This middleware validates requests against the OpenAPI spec for this API.
-          SimpleOpenApiValidator:
-            Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
+          - Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
             Options:
               # We can use a uri to load the spec from a remote location, or even from the API itself if it serves its own spec.
               SpecUri: https://github.com/aniongithub/memoryalpha-rag-api/releases/download/${MEMORYALPHA_RAG_API_VERSION}/memoryalpha-rag-api-spec.json
