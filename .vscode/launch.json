@@ -108,6 +108,7 @@
             "request": "launch",
             "preLaunchTask": "build-dotnet",
             "program": "${workspaceFolder}/warp.apis.developer/bin/Debug/net9.0/warp.apis.developer.dll",
+            "justMyCode": false,
             "env": {
                 "WARP_CONFIG_BASE_DIR": "./examples/quotas"
             },
@@ -119,6 +120,7 @@
             "request": "launch",
             "preLaunchTask": "build-dotnet",
             "program": "${workspaceFolder}/warp.apis.admin/bin/Debug/net9.0/warp.apis.admin.dll",
+            "justMyCode": false,
             "env": {
                 "WARP_CONFIG_BASE_DIR": "./examples/quotas"
             },
@@ -130,7 +132,7 @@
             "request": "launch",
             "preLaunchTask": "build-dotnet",
             "program": "${workspaceFolder}/warp/bin/Debug/net9.0/warp.dll",
-            "cwd": "${workspaceFolder}",
+            "justMyCode": false,
             "env": {
                 "MEMORYALPHA_RAG_API_ADDR": "http://memoryalpha-rag-api:8000",
                 "WARP_CONFIG_BASE_DIR": "./examples/quotas" // This is all we need to configure

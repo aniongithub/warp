@@ -9,6 +9,7 @@ namespace Warp.Dilithium.Middleware
     public class QuotaUpdaterOptions : MiddlewareOptions
     {
         public string UsageHeader { get; set; } = "X-Quota-Usage";
+        public string QuotaHeader { get; set; } = "X-Quota-Id";
         public float DefaultUsage { get; set; } = 1.0f;
         public bool OnlyOnSuccess { get; set; } = true;
         public List<int> SuccessStatusCodes { get; set; } = new() { 200, 201, 202, 204 };
@@ -21,24 +22,19 @@ namespace Warp.Dilithium.Middleware
 
         protected override async Task InvokeAsync(HttpContext context, RequestDelegate next)
         {
-            // Continue to next middleware first
-            await next(context);
-
-            // Check if QuotaChecker set context for us
-            if (!context.Items.ContainsKey("QuotaChecker.QuotaId"))
+            // Check if QuotaChecker set quota ID header for us
+            if (!context.Request.Headers.TryGetValue(Options.QuotaHeader, out var quotaIdValues))
             {
-                // No quota context - QuotaChecker wasn't run or didn't find a quota
+                // No quota header - QuotaChecker wasn't run or didn't find a quota
+                await next(context);
                 return;
             }
 
-            // Extract quota context set by QuotaChecker
-            var quotaId = context.Items["QuotaChecker.QuotaId"]?.ToString();
-            var quotaName = context.Items["QuotaChecker.QuotaName"]?.ToString();
-            var key = context.Items["QuotaChecker.Key"]?.ToString();
-
-            if (string.IsNullOrEmpty(quotaId) || string.IsNullOrEmpty(key))
+            var quotaId = quotaIdValues.FirstOrDefault();
+            if (string.IsNullOrEmpty(quotaId))
             {
-                Logger.LogWarning("QuotaUpdater: Invalid quota context from QuotaChecker");
+                Logger.LogWarning("QuotaUpdater: Empty quota ID in header '{QuotaHeader}'", Options.QuotaHeader);
+                await next(context);
                 return;
             }
 
@@ -46,6 +42,7 @@ namespace Warp.Dilithium.Middleware
             if (Options.OnlyOnSuccess && !Options.SuccessStatusCodes.Contains(context.Response.StatusCode))
             {
                 // Request failed, don't consume quota
+                await next(context);
                 return;
             }
 
@@ -63,6 +60,7 @@ namespace Warp.Dilithium.Middleware
             // Skip if no usage to record
             if (usage <= 0)
             {
+                await next(context);
                 return;
             }
 
@@ -73,13 +71,16 @@ namespace Warp.Dilithium.Middleware
                 quota.Used += usage;
                 await DataContext.SaveAsync(quota);
                 
-                Logger.LogDebug("QuotaUpdater: Updated quota '{QuotaName}' for key '{Key}' by {Usage} units", 
-                    quotaName, key, usage);
+                Logger.LogDebug("QuotaUpdater: Updated quota '{QuotaName}' (ID: {QuotaId}) by {Usage} units", 
+                    quota.QuotaName, quotaId, usage);
             }
             else
             {
                 Logger.LogWarning("QuotaUpdater: Could not find quota with ID '{QuotaId}' for update", quotaId);
             }
+
+            // Continue to next middleware
+            await next(context);
         }
     }
 }

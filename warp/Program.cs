@@ -22,25 +22,10 @@ var dataContext = config.GetSection("DataContext").CreateFromConfiguration();
 builder.Services.AddSingleton(dataContext);
 builder.Services.AddRequestTimeouts();
 
-// Load pipeline definitions from both PipelineComponents and inline route definitions
-var pipelineSection = config.GetSection("PipelineComponents");
-var pipelineComponents = new List<MiddlewareDescriptor>();
-var routePhaseOverrides = new Dictionary<string, Dictionary<string, string>>(); // routeId -> phase -> middleware list
-
-// Load global pipeline components (for backward compatibility)
-foreach (var section in pipelineSection.GetChildren())
-{
-    var descriptor = new MiddlewareDescriptor
-    {
-        Name = section.GetValue<string>("Name")!,
-        Type = section.GetValue<string>("Type")!,
-        Options = section.GetSection("Options")
-    };
-    pipelineComponents.Add(descriptor);
-}
-
 // Load inline middleware definitions from routes
 var routesSection = config.GetSection("ReverseProxy:Routes");
+var pipelineComponents = new List<MiddlewareDescriptor>();
+var routePhaseOverrides = new Dictionary<string, Dictionary<string, string>>(); // routeId -> phase -> middleware list
 foreach (var routeSection in routesSection.GetChildren())
 {
     var routeId = routeSection.Key;
@@ -51,31 +36,30 @@ foreach (var routeSection in routesSection.GetChildren())
         var phaseName = phaseSection.Key;
         if (phaseName is "Preprocess" or "Predispatch" or "Postdispatch" or "Postprocess")
         {
-            // Check if this phase has inline middleware definitions (dict format)
-            if (phaseSection.GetChildren().Any(child => child.GetChildren().Any()))
+            // Check if this phase has inline middleware definitions (array format)
+            var middlewareArray = phaseSection.Get<object[]>();
+            if (middlewareArray != null && middlewareArray.Length > 0)
             {
-                // Dictionary format - load middleware definitions
                 var middlewareNames = new List<string>();
-                foreach (var middlewareSection in phaseSection.GetChildren())
+                
+                for (int i = 0; i < middlewareArray.Length; i++)
                 {
-                    var middlewareName = middlewareSection.Key;
-                    var middlewareType = middlewareSection.GetValue<string>("Type");
+                    var middlewareConfig = phaseSection.GetSection($"{i}");
+                    var middlewareType = middlewareConfig.GetValue<string>("Type");
                     
                     if (!string.IsNullOrEmpty(middlewareType))
                     {
+                        // Generate a unique name for this middleware instance
+                        var middlewareName = $"{routeId}_{phaseName}_{i}_{middlewareType.Split('.').Last().Split(',').First()}";
+                        
                         var descriptor = new MiddlewareDescriptor
                         {
                             Name = middlewareName,
                             Type = middlewareType,
-                            Options = middlewareSection.GetSection("Options")
+                            Options = middlewareConfig.GetSection("Options")
                         };
                         
-                        // Only add if not already defined globally
-                        if (!pipelineComponents.Any(pc => pc.Name == middlewareName))
-                        {
-                            pipelineComponents.Add(descriptor);
-                        }
-                        
+                        pipelineComponents.Add(descriptor);
                         middlewareNames.Add(middlewareName);
                     }
                 }
@@ -241,24 +225,15 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
 }
 #pragma warning restore ASP0000 // Do not call 'IServiceCollection.BuildServiceProvider' in 'ConfigureServices'
 
-// Helper method to extract middleware names from metadata (supports both string and dict formats)
+// Helper method to extract middleware names from route phase overrides
 static string[] GetMiddlewareNames(IReadOnlyDictionary<string, string>? metadata, string phaseName, Dictionary<string, Dictionary<string, string>> routePhaseOverrides, string? routeId = null)
 {
-    if (metadata == null)
-        return Array.Empty<string>();
-
-    // Check if we have a route-specific override
+    // Only check route-specific overrides since we no longer support global metadata
     if (!string.IsNullOrEmpty(routeId) && 
         routePhaseOverrides.TryGetValue(routeId, out var phaseOverrides) &&
         phaseOverrides.TryGetValue(phaseName, out var overrideValue))
     {
         return overrideValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    }
-
-    // Fall back to standard metadata
-    if (metadata.TryGetValue(phaseName, out var phase))
-    {
-        return phase.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
     return Array.Empty<string>();
@@ -304,17 +279,46 @@ app.MapReverseProxy(proxyPipeline =>
     // POSTDISPATCH: runs after dispatch, before postprocess
     proxyPipeline.Use(async (context, next) =>
     {
-        await next();
         var proxyFeature = context.Features.Get<Yarp.ReverseProxy.Model.IReverseProxyFeature>();
         var metadata = proxyFeature?.Route?.Config?.Metadata;
         var routeId = proxyFeature?.Route?.Config?.RouteId;
         var postdispatch = GetMiddlewareNames(metadata, "Postdispatch", routePhaseOverrides, routeId);
-        foreach (var name in postdispatch)
+        
+        if (postdispatch.Length == 0)
         {
-            if (componentMap.TryGetValue(name, out var middleware))
+            await next();
+            return;
+        }
+
+        // Intercept the response stream to allow middlewares to process the response
+        var originalBodyStream = context.Response.Body;
+        using var responseBody = new MemoryStream();
+        context.Response.Body = responseBody;
+
+        try
+        {
+            // Call next to get the response from the backend
+            await next();
+
+            // Reset stream position to read the response
+            responseBody.Seek(0, SeekOrigin.Begin);
+
+            // Now run postdispatch middlewares with the response available
+            foreach (var name in postdispatch)
             {
-                await middleware(_ => Task.CompletedTask)(context);
+                if (componentMap.TryGetValue(name, out var middleware))
+                {
+                    await middleware(_ => Task.CompletedTask)(context);
+                }
             }
+
+            // Copy the response back to the original stream
+            responseBody.Seek(0, SeekOrigin.Begin);
+            await responseBody.CopyToAsync(originalBodyStream);
+        }
+        finally
+        {
+            context.Response.Body = originalBodyStream;
         }
     });
 

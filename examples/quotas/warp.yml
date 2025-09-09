@@ -33,8 +33,7 @@ ReverseProxy:
         Path: "/developer/{**remainder}" # All paths under /developer are routed to the Developer API.
       Metadata:
         Preprocess:
-          DevPermissionsChecker: # Middleware to check for "developer" permission.
-            Type: "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium"
+          - Type: "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium"
             Options:
               RequiredPermissions:
                 - "developer"
@@ -43,8 +42,7 @@ ReverseProxy:
                 - "developer"
                 - "user"
         Predispatch: # Middleware to validate requests against the Developer API OpenAPI spec.
-          DevOpenApiValidator:
-            Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
+          - Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
             Options:
               SpecFile: "spec/warp.apis.developer.yml"
 
@@ -55,8 +53,7 @@ ReverseProxy:
         Path: "/admin/{**remainder}" # All paths under /admin are routed to the Admin API.
       Metadata:
         Preprocess:
-          AdminPermissionsChecker: # Middleware to check for "admin" permission.
-            Type: "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium"
+          - Type: "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium"
             Options:
               RequiredPermissions:
                 - "admin"
@@ -64,8 +61,7 @@ ReverseProxy:
               DefaultPermissions: # Set Default permissions for new users.
                 - "admin"
         Predispatch: # Middleware to validate requests against the Admin API OpenAPI spec.
-          AdminOpenApiValidator:
-            Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
+          - Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
             Options:
               SpecFile: "spec/warp.apis.admin.yml"
 
@@ -82,22 +78,17 @@ ReverseProxy:
         
         # This section runs when the request first arrives and is matched to this route.
         Preprocess:
-
           # This middleware rate-limits requests to 1 per second for free users.
-          RateLimiter:
-            Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
+          - Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
             Options:
               RateLimitHz: 1.0
 
           # This middleware validates API keys for users. We can obtain API keys from the Developer API.
-          ApiKeyValidator:
-            Name: "ApiKeyValidator"
-            Type: "Warp.Dilithium.Middleware.ApiKeyValidator, warp.dilithium"
+          - Type: "Warp.Dilithium.Middleware.ApiKeyValidator, warp.dilithium"
 
           # This middleware ensures that free API users do not exceed their quotas.
           # Quota is tracked per user and when the quota is exceeded, requests are rejected.
-          FreeQuotaChecker:
-            Type: "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium"
+          - Type: "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium"
             Options:
               QuotaName: "free_quota"
               QuotaUsage: 1.0 # Each request uses 1.0 units of the quota
@@ -109,21 +100,27 @@ ReverseProxy:
           # Here, we will have the canonical path and headers.
 
           # This middleware validates requests against the OpenAPI spec for this API.
-          SimpleOpenApiValidator:
-            Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
+          - Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
             Options:
               # We can use a uri to load the spec from a remote location, or even from the API itself if it serves its own spec.
               SpecUri: https://github.com/aniongithub/memoryalpha-rag-api/releases/download/${MEMORYALPHA_RAG_API_VERSION}/memoryalpha-rag-api-spec.json
 
-        Postprocess:
+        Postdispatch:
           # This section runs after the response is received from the destination but before it is sent to the client.
           # Here, we can inspect the response and update quotas or perform instrumentation/logging.
+
+          # This middleware extracts usage information from JSON responses and adds it as headers.
+          # For example, if an API returns {"tokens_used": 150}, this can extract that value.
+          - Type: "Warp.Dilithium.Middleware.JsonResponseToHeaderTransform, warp.dilithium"
+            Options:
+              Mappings:
+                - JqSelector: ".token_usage.total_tokens"
+                  DestinationHeader: "X-Quota-Usage"
 
           # This middleware updates the used quota for free users after each successful request.
           # This ensures that the quota is decremented only for successful requests and can be tracked
           # correctly for variable usage-based billing.
-          FreeQuotaUpdater:
-            Type: "Warp.Dilithium.Middleware.QuotaUpdater, warp.dilithium"
+          - Type: "Warp.Dilithium.Middleware.QuotaUpdater, warp.dilithium"
             Options:
               UsageHeader: "X-Quota-Usage" # Our API can return the actual usage in this header (defaults to 1.0 if not present)
 
@@ -140,22 +137,17 @@ ReverseProxy:
         
         # This section runs when the request first arrives and is matched to this route.
         Preprocess:
-
           # This middleware rate-limits requests to 5 per second for pro users.
-          RateLimiter:
-            Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
+          - Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
             Options:
               RateLimitHz: 5.0
 
           # This middleware validates API keys for users. We can obtain API keys from the Developer API.
-          ApiKeyValidator:
-            Name: "ApiKeyValidator"
-            Type: "Warp.Dilithium.Middleware.ApiKeyValidator, warp.dilithium"
+          - Type: "Warp.Dilithium.Middleware.ApiKeyValidator, warp.dilithium"
 
           # This middleware ensures that pro API users have their quotas tracked.
           # Quota is tracked per user and can be used for billing later.
-          ProQuotaChecker:
-            Type: "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium"
+          - Type: "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium"
             Options:
               QuotaName: "pro_quota"
               QuotaUsage: 1.0 # Each request uses 1.0 units of the quota
@@ -166,8 +158,7 @@ ReverseProxy:
           # Here, we will have the canonical path and headers.
 
           # This middleware validates requests against the OpenAPI spec for this API.
-          SimpleOpenApiValidator:
-            Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
+          - Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
             Options:
               # We can use a uri to load the spec from a remote location, or even from the API itself if it serves its own spec.
               SpecUri: https://github.com/aniongithub/memoryalpha-rag-api/releases/download/${MEMORYALPHA_RAG_API_VERSION}/memoryalpha-rag-api-spec.json              

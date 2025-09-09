@@ -15,6 +15,7 @@ namespace Warp.Dilithium.Middleware
         public float QuotaLimit { get; set; } = 10.0f;
         public string? QuotaLimitHeader { get; set; }
         public string QuotaType { get; set; } = "prepaid";
+        public string QuotaHeader { get; set; } = "X-Quota-Id";
     }
 
     public sealed class QuotaChecker : MiddlewareBase<QuotaCheckerOptions>
@@ -93,9 +94,7 @@ namespace Warp.Dilithium.Middleware
             }
 
             // Store quota context for QuotaUpdater middleware to use later
-            context.Items["QuotaChecker.QuotaId"] = quota.Id;
-            context.Items["QuotaChecker.QuotaName"] = quotaName;
-            context.Items["QuotaChecker.Key"] = key;
+            context.Request.Headers[Options.QuotaHeader] = quota.Id;
 
             // Continue to next middleware - QuotaUpdater will handle actual consumption
             await next(context);
