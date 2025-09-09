@@ -1,12 +1,16 @@
 # Quotas Example
 
-This example demonstrates how to use Warp Gateway with quota restriction and tracking to ensure we can monetize our APIs. It includes configurations for "prepaid" (decrement an already assigned quota) and "postpaid" (tracking a user we will bill later) quotas.
+This example demonstrates how to use Warp Gateway with dynamic quota restriction and tracking to ensure we can monetize our APIs. It showcases dynamic usage tracking where quota consumption is determined by the actual response from the API (e.g., token usage), rather than fixed per-request charges.
+
+**Note**: Warp also supports simple quotas where each request consumes a fixed amount (like 1.0 per request), but this example focuses on the more sophisticated dynamic quota system.
 
 ## Configuration Overview
 
 This example includes:
 
-- **Quota tracking**: Protected free and pro routes that show two different kinds of monetization quotas
+- **Dynamic Quota tracking**: Quota consumption based on actual API response data (e.g., tokens used)
+- **Response-based Usage**: Middleware extracts usage information from JSON responses using jq selectors
+- **Prepaid vs Postpaid**: Both "prepaid" (hard limits) and "postpaid" (usage tracking for billing) quota models
 - **API Key Authentication**: Protected MemoryAlpha API requiring valid API keys
 - **Developer API**: End-user accessible management interface for creating and managing API keys
 - **Admin API**: Administration API that is not accessible by end-users, for managing users, quotas, billing, etc.
@@ -60,7 +64,8 @@ curl -G "http://localhost:5000/examples/quotas/free/memoryalpha/rag/ask" \
   --data-urlencode "question=What is the color of Vulcan blood?"
 ```
 
-After running this command one or more times, you will see that the quota usage for this user has been set/incremented
+After running this command one or more times, you will see that the quota usage for this user has been dynamically updated based on the actual token usage returned by the API:
+
 ```json
   ...
   "quotas": [
@@ -68,14 +73,16 @@ After running this command one or more times, you will see that the quota usage 
       "id": "7a6c43e1-d170-429b-8833-ada343ec92ea",
       "key": "user@example.com",
       "quotaName": "free_quota",
-      "used": 2,
-      "limit": 10,
+      "used": 1120.0,
+      "limit": 5000.0,
       "type": "prepaid"
     }
   ]
   ...
 ```
-Since this is a "prepaid" quota type, if you run this more than 10 times, any subsequent requests will be rejected. 
+
+Notice how the `used` value (1120.0) corresponds to the actual token usage from the API response, not just a simple increment. The middleware extracts the `token_usage.total_tokens` value from the JSON response and uses that to update the quota.
+If we exceed the number of tokens allowed in our quota, any subsequent requests will be rejected. 
 Note: If this were a "postpaid" quota, it would simply accrue usage for later billing.
 
 ### Step 3: Reset the quota (assume the user bought more usage tokens)
@@ -132,16 +139,19 @@ See the OpenAPI Spec for the warp admin API to understand more.
 
 ## How It Works
 
-### Quota-Protected API Flow
+### Quota-Protected API Flow (Dynamic Usage Tracking)
 1. **Request arrives** with `X-Api-Key` header at `/examples/quotas/free/memoryalpha/rag/ask`
 2. **ApiKeyValidator** middleware validates the key and loads associated user permissions
-3. **QuotaChecker** middleware checks if user has sufficient quota for the request:
-   - For "prepaid" quotas: Verifies `used < limit`, increments usage on success
-   - For "postpaid" quotas: Simply tracks usage for later billing
+3. **QuotaChecker** middleware checks if user has sufficient quota for the request and sets quota context
 4. **Rate limiter** applies per-key rate limits (1 req/sec in this example)
 5. **OpenAPI validator** validates the request against the MemoryAlpha API spec
 6. **Request forwarded** to MemoryAlpha API if all checks pass
-7. **Response returned** to client, quota usage updated in data store
+7. **Response intercepted** in PostDispatch phase:
+   - **JsonResponseToHeaderTransform** extracts actual usage from response (e.g., `token_usage.total_tokens`)
+   - **QuotaUpdater** updates quota with the actual usage amount, not a fixed increment
+8. **Response returned** to client with updated quota tracking
+
+This dynamic approach allows for precise usage-based billing where different requests may consume different amounts of quota based on their actual resource consumption.
 
 ### Developer API Flow (API Key Management)
 1. **Request arrives** with `X-JWT-Email` header (simulating JWT authentication)
@@ -157,7 +167,10 @@ See the OpenAPI Spec for the warp admin API to understand more.
 
 ## Key Features Demonstrated
 
-- **Quota Management**: Both "prepaid" (hard limits) and "postpaid" (usage tracking) quota models
+- **Dynamic Quota Management**: Usage tracking based on actual API response data (token consumption)
+- **Response Data Extraction**: Using jq selectors to extract usage metrics from JSON responses
+- **Flexible Quota Models**: Both "prepaid" (hard limits) and "postpaid" (usage tracking) quota models
+- **Header-based Context**: Quota context passed via request headers for external observability
 - **API Key Authentication**: Protecting APIs with key-based access
 - **Admin Operations**: Administrative API for quota management and user administration
 - **Developer Portal**: Self-service API key management
@@ -165,6 +178,6 @@ See the OpenAPI Spec for the warp admin API to understand more.
 - **Rate Limiting**: Per-key rate limiting (1 req/sec in this example)
 - **OpenAPI Validation**: Request/response validation for all APIs
 - **Multi-service Architecture**: Gateway + Developer API + Admin API + Protected API
-- **Usage Tracking**: Real-time quota consumption tracking with data persistence
+- **Real-time Usage Tracking**: Precise quota consumption tracking with data persistence
 
-This example shows how Warp can provide a complete API monetization solution with quota enforcement, usage tracking, administrative controls, and developer self-service capabilities.
+This example shows how Warp can provide a sophisticated API monetization solution with dynamic usage-based quota enforcement, real-time consumption tracking, administrative controls, and developer self-service capabilities. The dynamic quota system allows for precise billing based on actual resource consumption rather than simple per-request charges.
