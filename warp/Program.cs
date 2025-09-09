@@ -105,18 +105,8 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
                 ?? throw new Exception($"Could not find middleware type: {descriptor.Type}");
             tempLogger.LogDebug("Checking inheritance chain for middleware: {MiddlewareType}", middlewareType.FullName);
             
-            // Find the MiddlewareBase<> in the inheritance chain
-            Type? configBaseType = null;
-            var currentType = middlewareType;
-            while (currentType != null && currentType != typeof(object))
-            {
-                if (currentType.IsGenericType && currentType.GetGenericTypeDefinition() == typeof(MiddlewareBase<>))
-                {
-                    configBaseType = currentType;
-                    break;
-                }
-                currentType = currentType.BaseType;
-            }
+            // Find the MiddlewareBase<> in the inheritance chain so we can get the options type
+            var configBaseType = middlewareType.GetMiddlewareBaseType();
             
             if (configBaseType == null)
                 throw new Exception($"Middleware type {middlewareType.FullName} does not inherit from MiddlewareBase<>.");
