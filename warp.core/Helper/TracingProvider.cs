@@ -10,7 +10,7 @@ public abstract class TracingProvider : IDisposable
         Name = name;
     }
 
-    public TraceSpan Start(string traceParent)
+    public TraceSpan Start(string traceParent = "")
     {
         return _disposed ?
             throw new ObjectDisposedException(nameof(TracingProvider)) :

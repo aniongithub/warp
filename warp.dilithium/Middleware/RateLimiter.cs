@@ -20,7 +20,7 @@ public sealed class RateLimiter : MiddlewareBase<RateLimiterOptions>
     {
     }
 
-    protected override async Task InvokeAsync(HttpContext context, RequestDelegate next)
+    protected async override Task<IResult> ProcessAsync(HttpContext context)
     {
         string? key = null;
         // Check KeyHeaders first
@@ -65,9 +65,8 @@ public sealed class RateLimiter : MiddlewareBase<RateLimiterOptions>
         }
         if (tokens < 1)
         {
-            context.Response.StatusCode = 429;
-            await context.Response.WriteAsync("Rate limit exceeded.");
-            // Do not return; let pipeline continue to postprocess middleware
+            return Results.Problem("Rate limit exceeded", statusCode: 429)
+                .Stop(); // Stop the pipeline on rate limit exceeded
         }
         else
         {
@@ -86,6 +85,6 @@ public sealed class RateLimiter : MiddlewareBase<RateLimiterOptions>
                 await DataContext.SaveAsync(newRequest);
             }
         }
-        await next(context);
+        return Results.Ok().Continue(); // This middleware allows the request to continue
     }
 }
