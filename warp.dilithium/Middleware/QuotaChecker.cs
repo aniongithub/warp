@@ -23,7 +23,7 @@ namespace Warp.Dilithium.Middleware
         public QuotaChecker(string name, ILogger logger, IDataContext context, QuotaCheckerOptions options)
             : base(name, logger, context, options) { }
 
-        protected override async Task InvokeAsync(HttpContext context, RequestDelegate next)
+        protected override async Task<IResult> ProcessAsync(HttpContext context)
         {
             // 1. Resolve quota name from options or header
             string quotaName = Options.QuotaName ?? string.Empty;
@@ -31,18 +31,18 @@ namespace Warp.Dilithium.Middleware
                 quotaName = headerVals.FirstOrDefault() ?? string.Empty;
             if (string.IsNullOrEmpty(quotaName))
             {
-                context.Response.StatusCode = 400;
-                await context.Response.WriteAsync("Missing quota name.");
-                return;
+                return Results
+                    .Problem(statusCode: 400, title: "Bad Request", detail: "Missing quota name.")
+                    .Stop();
             }
 
             // 2. Get user or API key identifier (from header or context)
             string key = ResolveKey(context);
             if (string.IsNullOrEmpty(key))
             {
-                context.Response.StatusCode = 401;
-                await context.Response.WriteAsync($"Missing key header: {Options.KeyHeaders}");
-                return;
+                return Results
+                    .Problem(statusCode: 401, title: "Unauthorized", detail: $"Missing key header: {string.Join(", ", Options.KeyHeaders)}")
+                    .Stop();
             }
 
             // 3. Lookup quota usage and limit
@@ -67,9 +67,9 @@ namespace Warp.Dilithium.Middleware
                 }
                 else
                 {
-                    context.Response.StatusCode = 403;
-                    await context.Response.WriteAsync($"No quota found for key '{key}' and quota '{quotaName}'.");
-                    return;
+                    return Results
+                        .Problem(statusCode: 403, title: "Forbidden", detail: $"No quota found for key '{key}' and quota '{quotaName}'.")
+                        .Stop();
                 }
             }
 
@@ -79,25 +79,26 @@ namespace Warp.Dilithium.Middleware
                 case "prepaid":
                     if (quota.Used >= quota.Limit)
                     {
-                        context.Response.StatusCode = 429;
-                        await context.Response.WriteAsync($"Quota exhausted for '{quotaName}'.");
-                        return;
+                        return Results
+                            .Problem(statusCode: 429, title: "Too Many Requests", detail: $"Quota exhausted for '{quotaName}'.")
+                            .Stop();
                     }
                     break;
                 case "postpaid":
                     // postpaid always allowed, usage tracking happens in QuotaUpdater
                     break;
                 default:
-                    context.Response.StatusCode = 500;
-                    await context.Response.WriteAsync($"Unknown quota type '{quota.Type}' for quota '{quotaName}'.");
-                    return;
+                    return Results
+                        .Problem(statusCode: 500, title: "Internal Server Error", detail: $"Unknown quota type '{quota.Type}' for quota '{quotaName}'.")
+                        .Stop();
             }
 
             // Store quota context for QuotaUpdater middleware to use later
             context.Request.Headers[Options.QuotaHeader] = quota.Id;
 
-            // Continue to next middleware - QuotaUpdater will handle actual consumption
-            await next(context);
+            return Results
+                .Ok()
+                .Continue();
         }
 
         private string ResolveKey(HttpContext context)

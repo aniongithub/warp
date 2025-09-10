@@ -22,14 +22,14 @@ public sealed class PermissionsChecker : MiddlewareBase<PermissionsCheckerOption
     public PermissionsChecker(string name, ILogger logger, IDataContext context, PermissionsCheckerOptions options)
         : base(name, logger, context, options) { }
 
-    protected override async Task InvokeAsync(HttpContext context, RequestDelegate next)
+    protected override async Task<IResult> ProcessAsync(HttpContext context)
     {
         var userEmail = context.Request.Headers[Options.UserIdHeader].FirstOrDefault();
         if (string.IsNullOrEmpty(userEmail))
         {
-            context.Response.StatusCode = 401;
-            await context.Response.WriteAsync($"Missing user id header: {Options.UserIdHeader}");
-            return;
+            return Results.
+                Problem(statusCode: 401, title: "Unauthorized", detail: $"Missing user id header: {Options.UserIdHeader}")
+                .Stop();
         }
 
         var user = DataContext.Users.FirstOrDefault(u => u.Email == userEmail);
@@ -45,9 +45,9 @@ public sealed class PermissionsChecker : MiddlewareBase<PermissionsCheckerOption
             }
             else
             {
-                context.Response.StatusCode = 403;
-                await context.Response.WriteAsync("User not found.");
-                return;
+                return Results
+                    .Problem(statusCode: 403, title: "Forbidden", detail: $"User not found: {userEmail}")
+                    .Stop();
             }
         }
 
@@ -67,9 +67,9 @@ public sealed class PermissionsChecker : MiddlewareBase<PermissionsCheckerOption
         var missing = requiredPermissions.Except(user.Permissions ?? new List<string>()).ToList();
         if (missing.Count > 0)
         {
-            context.Response.StatusCode = 403;
-            await context.Response.WriteAsync($"Missing permissions: {string.Join(",", missing)}");
-            return;
+            return Results
+                .Problem(statusCode: 403, title: "Forbidden", detail: $"Missing permissions: {string.Join(",", missing)}")
+                .Stop();
         }
 
         // Optionally add X-Permissions header to request if all required permissions are present
@@ -79,8 +79,8 @@ public sealed class PermissionsChecker : MiddlewareBase<PermissionsCheckerOption
             context.Request.Headers[Options.PermissionsHeader] = allPerms;
         }
 
-        // Use context.GetRequestPath() if you need the path in this middleware
-
-        await next(context);
+        return Results
+            .Ok()
+            .Continue();
     }
 }

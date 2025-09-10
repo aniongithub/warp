@@ -17,17 +17,17 @@ public sealed class ApiKeyValidator : MiddlewareBase<ApiKeyValidatorOptions>
     {
     }
 
-    protected override async Task InvokeAsync(HttpContext context, RequestDelegate next)
+#pragma warning disable CS1998 // Async method lacks 'await' operators and will run synchronously
+    protected override async Task<IResult> ProcessAsync(HttpContext context)
+#pragma warning restore CS1998 // Async method lacks 'await' operators and will run synchronously
     {
         var _headerName = Options.HeaderName;
         if (!context.Request.Headers.TryGetValue(_headerName, out var apiKeyHeader))
         {
             Logger.LogWarning("Missing API key in header: {HeaderName}", _headerName);
-            if (!context.Response.HasStarted)
-            {
-                context.Response.StatusCode = 401;
-                await context.Response.WriteAsync("Unauthorized");
-            }
+            return Results
+                .Problem(statusCode: 401, title: "Unauthorized", detail: "Missing API key.")
+                .Stop();
         }
         else
         {
@@ -36,9 +36,9 @@ public sealed class ApiKeyValidator : MiddlewareBase<ApiKeyValidatorOptions>
             var validKey = DataContext.ApiKeys.FirstOrDefault(k => k.Key == apiKey && k.IsActive);
             if (validKey == null)
             {
-                Logger.LogWarning("Invalid or inactive API key: {ApiKey}", apiKey);
-                context.Response.StatusCode = 401;
-                await context.Response.WriteAsync("Invalid API key.");
+                return Results
+                    .Problem(statusCode: 401, title: "Unauthorized", detail: $"Invalid or inactive API key: {apiKey}")
+                    .Stop();
             }
             else
             {
@@ -48,6 +48,9 @@ public sealed class ApiKeyValidator : MiddlewareBase<ApiKeyValidatorOptions>
                 context.Request.Headers["X-JWT-Email"] = validKey.Owner;
             }
         }
-        await next(context);
+        
+        return Results
+            .Ok()
+            .Continue();
     }
 }

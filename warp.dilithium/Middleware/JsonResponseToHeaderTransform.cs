@@ -24,13 +24,12 @@ namespace Warp.Dilithium.Middleware
         public JsonResponseToHeaderTransform(string name, ILogger logger, IDataContext context, JsonBodyToHeaderTransformOptions options)
             : base(name, logger, context, options) { }
 
-        protected override async Task InvokeAsync(HttpContext context, RequestDelegate next)
+        protected override async Task<IResult> ProcessAsync(HttpContext context)
         {
             // Skip if no mappings are configured
             if (Options.Mappings.Count == 0)
             {
-                await next(context);
-                return;
+                return Results.Ok().Continue();
             }
 
             // Check if response has JSON content
@@ -38,8 +37,7 @@ namespace Warp.Dilithium.Middleware
             if (string.IsNullOrEmpty(contentType) || !contentType.Contains("application/json"))
             {
                 // Not JSON, continue to next middleware
-                await next(context);
-                return;
+                return Results.Ok().Continue();
             }
 
             // Read the response body that's already available
@@ -50,8 +48,7 @@ namespace Warp.Dilithium.Middleware
             if (string.IsNullOrEmpty(responseBodyText))
             {
                 // Empty response, nothing to process
-                await next(context);
-                return;
+                return Results.Ok().Continue();
             }
 
             try
@@ -89,8 +86,7 @@ namespace Warp.Dilithium.Middleware
                 Logger.LogWarning(ex, "JsonResponseToHeaderTransform: Failed to process JSON response body");
             }
 
-            // Continue to next middleware
-            await next(context);
+            return Results.Ok().Continue();
         }
     }
 }

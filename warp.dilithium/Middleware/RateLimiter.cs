@@ -65,7 +65,8 @@ public sealed class RateLimiter : MiddlewareBase<RateLimiterOptions>
         }
         if (tokens < 1)
         {
-            return Results.Problem("Rate limit exceeded", statusCode: 429)
+            return Results
+                .Problem("Rate limit exceeded", statusCode: 429)
                 .Stop(); // Stop the pipeline on rate limit exceeded
         }
         else
@@ -85,6 +86,8 @@ public sealed class RateLimiter : MiddlewareBase<RateLimiterOptions>
                 await DataContext.SaveAsync(newRequest);
             }
         }
-        return Results.Ok().Continue(); // This middleware allows the request to continue
+        return Results
+            .Ok()
+            .Continue(); // This middleware allows the request to continue
     }
 }

@@ -20,30 +20,27 @@ namespace Warp.Dilithium.Middleware
         public QuotaUpdater(string name, ILogger logger, IDataContext context, QuotaUpdaterOptions options)
             : base(name, logger, context, options) { }
 
-        protected override async Task InvokeAsync(HttpContext context, RequestDelegate next)
+        protected override async Task<IResult> ProcessAsync(HttpContext context)
         {
             // Check if QuotaChecker set quota ID header for us
             if (!context.Request.Headers.TryGetValue(Options.QuotaHeader, out var quotaIdValues))
             {
                 // No quota header - QuotaChecker wasn't run or didn't find a quota
-                await next(context);
-                return;
+                return Results.Ok().Continue();
             }
 
             var quotaId = quotaIdValues.FirstOrDefault();
             if (string.IsNullOrEmpty(quotaId))
             {
                 Logger.LogWarning("QuotaUpdater: Empty quota ID in header '{QuotaHeader}'", Options.QuotaHeader);
-                await next(context);
-                return;
+                return Results.Ok().Continue();
             }
 
             // Check if we should update quota based on response status
             if (Options.OnlyOnSuccess && !Options.SuccessStatusCodes.Contains(context.Response.StatusCode))
             {
                 // Request failed, don't consume quota
-                await next(context);
-                return;
+                return Results.Ok().Continue();
             }
 
             // Determine usage amount
@@ -60,8 +57,7 @@ namespace Warp.Dilithium.Middleware
             // Skip if no usage to record
             if (usage <= 0)
             {
-                await next(context);
-                return;
+                return Results.Ok().Continue();
             }
 
             // Find and update the quota
@@ -79,8 +75,7 @@ namespace Warp.Dilithium.Middleware
                 Logger.LogWarning("QuotaUpdater: Could not find quota with ID '{QuotaId}' for update", quotaId);
             }
 
-            // Continue to next middleware
-            await next(context);
+            return Results.Ok().Continue();
         }
     }
 }
