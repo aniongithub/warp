@@ -3,6 +3,22 @@ $include:
   - "shared/${DATACONTEXT_IMPL}-datacontext.yml"
   - "shared/opentelemetry.yml"
 
+# CORS Configuration (optional - only include if cross-origin requests are needed)
+# Cors:
+#   AllowedOrigins:
+#     - "http://localhost:3030"
+#     - "https://yourdomain.com"
+#   AllowedMethods:
+#     - "GET"
+#     - "POST"
+#     - "PUT"
+#     - "DELETE"
+#   AllowedHeaders:
+#     - "Content-Type"
+#     - "Authorization"
+#     - "X-API-Key"
+#   AllowCredentials: true
+
 ReverseProxy:
   Clusters:
     admin_api_cluster:

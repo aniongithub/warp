@@ -1,14 +1,9 @@
 using OpenTelemetry.Trace;
 using OpenTelemetry.Resources;
-
-using Warp;
 using Warp.Core.Data;
 using Warp.Core.Middleware;
 using Warp.Core.Helper;
-using Warp.Dilithium.Middleware;
 using System.Diagnostics;
-using Microsoft.VisualBasic;
-using System.Reflection;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -91,9 +86,6 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
     var tempLoggerFactory = tempProvider.GetRequiredService<ILoggerFactory>();
     var tempLogger = tempLoggerFactory.CreateLogger("Startup");
 
-    var needsOtel = pipelineComponents.Any(pc =>
-    pc.Type.Contains("OpenTelemetry", StringComparison.OrdinalIgnoreCase));
-
     // Populate componentMap
     foreach (var descriptor in pipelineComponents)
     {
@@ -118,13 +110,6 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
 
             if (descriptor.Options != null)
             {
-                var is_otel_middleware = descriptor.Type.StartsWith("Warp.Middleware.OpenTelemetry", StringComparison.OrdinalIgnoreCase);
-                if (needsOtel && !is_otel_middleware)
-                {
-                    descriptor.Options["TracingEnabled"] = "true";
-                    descriptor.Options["TracingProvider"] = "Warp.Dilithium.Middleware.OpenTelemetryTracingProvider, warp.dilithium";
-                    descriptor.Options["TraceName"] = $"{descriptor.Name}.Trace";
-                }
                 tempLogger.LogDebug("Binding options for middleware: {Name}", descriptor.Name);
                 descriptor.Options.Bind(configInstance); // Assuming Options is IConfigurationSection
             }
@@ -155,58 +140,33 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
         }
     }
 
-    if (needsOtel)
+    // Always configure OpenTelemetry for unified tracing
+    tempLogger.LogInformation("Configuring OpenTelemetry for unified tracing...");
+
+    // Ensure we use the correct config object, not builder.Configuration
+    var otelSection = config.GetSection("OpenTelemetry");
+
+    var sourceNames = otelSection.GetSection("SourceNames").Get<string[]>() ?? new[] { "Warp", "Warp.Logger" };
+    var otelEndpoint = otelSection.GetValue<string>("Endpoint") ?? "http://localhost:4317";
+    var serviceName = otelSection.GetValue<string>("ServiceName") ?? "Warp";
+
+    builder.Services.AddOpenTelemetry().WithTracing(tracer =>
     {
-        tempLogger.LogInformation("OpenTelemetry middleware detected, configuring OpenTelemetry...");
-
-        // Ensure we use the correct config object, not builder.Configuration
-        var otelSection = config.GetSection("OpenTelemetry");
-
-        var sourceNames = otelSection.GetSection("SourceNames").Get<string[]>() ?? new[] { "Warp" };
-
-        // Ensure all routes are traced if OpenTelemetry is enabled
-        var routes = config.GetSection("ReverseProxy:Routes").Get<List<RouteDescriptor>>() ?? [];
-        foreach (var route in routes)
-        {
-            // Set tracing properties directly in the configuration section if possible
-            var routeType = route.GetType();
-            var tracingEnabledProp = routeType.GetProperty("TracingEnabled");
-            if (tracingEnabledProp != null && tracingEnabledProp.CanWrite)
-                tracingEnabledProp.SetValue(route, true);
-            var tracingProviderProp = routeType.GetProperty("TracingProvider");
-            if (tracingProviderProp != null && tracingProviderProp.CanWrite)
-                tracingProviderProp.SetValue(route, "Warp.Middleware.OpenTelemetryTracingProvider, Warp");
-            var traceNameProp = routeType.GetProperty("TraceName");
-            if (traceNameProp != null && traceNameProp.CanWrite)
-                traceNameProp.SetValue(route, $"{route.Cluster}.{route.Path}");
-        }
-
-        // Optionally register OpenTelemetry if configured
-        if (sourceNames is { Length: > 0 })
-        {
-            var otelEndpoint = otelSection.GetValue<string>("Endpoint") ?? "http://localhost:4317";
-            var serviceName = otelSection.GetValue<string>("ServiceName") ?? "Warp";
-
-            builder.Services.AddOpenTelemetry().WithTracing(tracer =>
-            {
-                tracer
-                    .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(serviceName))
-                    .AddAspNetCoreInstrumentation(options =>
-                        options.EnrichWithHttpResponse = (activity, response) =>
-                            activity.SetStatus(response?.StatusCode.IsErrorStatus() == true
-                                ? ActivityStatusCode.Error
-                                : ActivityStatusCode.Ok,
-                                response != null
-                                    ? $"HTTP {response.StatusCode.GetStatusDescription()}"
-                                    : string.Empty))
-                    .AddSource(sourceNames)
-                    .AddOtlpExporter(otlp => otlp.Endpoint = new Uri(otelEndpoint))
-                    .AddHttpClientInstrumentation();
-            });
-        }
-    }
-    else
-        tempLogger.LogInformation("No OpenTelemetry middleware detected, skipping OpenTelemetry configuration.");
+        tracer
+            .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(serviceName))
+            .AddAspNetCoreInstrumentation(options =>
+                options.EnrichWithHttpResponse = (activity, response) =>
+                    activity.SetStatus(response?.StatusCode.IsErrorStatus() == true
+                        ? ActivityStatusCode.Error
+                        : ActivityStatusCode.Ok,
+                        response != null
+                            ? $"HTTP {response.StatusCode.GetStatusDescription()}"
+                            : string.Empty))
+            .AddSource(sourceNames)
+            .AddConsoleExporter() // For hierarchical console logging
+            .AddOtlpExporter(otlp => otlp.Endpoint = new Uri(otelEndpoint)) // For Jaeger/external tools
+            .AddHttpClientInstrumentation();
+    });
         
     // Register PostTransformMiddlewareRunner for YARP post-transform (predispatch) extensibility
     builder.Services.AddSingleton<Yarp.ReverseProxy.Forwarder.IPostTransformMiddleware>(
@@ -235,12 +195,46 @@ app.UseRequestTimeouts();
 
 var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
 
-app.UseCors(policy => policy
-    .WithOrigins("http://localhost:3030")
-    .AllowAnyMethod()
-    .AllowAnyHeader()
-    .AllowCredentials()
-);
+// Configure CORS only if explicitly configured - no insecure defaults
+var corsSection = config.GetSection("Cors");
+if (corsSection.Exists())
+{
+    var allowedOrigins = corsSection.GetSection("AllowedOrigins").Get<string[]>();
+    var allowedMethods = corsSection.GetSection("AllowedMethods").Get<string[]>();
+    var allowedHeaders = corsSection.GetSection("AllowedHeaders").Get<string[]>();
+    var allowCredentials = corsSection.GetValue<bool>("AllowCredentials");
+
+    if (allowedOrigins?.Length > 0)
+    {
+        logger.LogInformation("Configuring CORS with {OriginCount} allowed origins", allowedOrigins.Length);
+        
+        app.UseCors(policy =>
+        {
+            policy.WithOrigins(allowedOrigins);
+            
+            if (allowedMethods?.Length > 0)
+                policy.WithMethods(allowedMethods);
+            else
+                policy.AllowAnyMethod();
+            
+            if (allowedHeaders?.Length > 0)
+                policy.WithHeaders(allowedHeaders);
+            else
+                policy.AllowAnyHeader();
+            
+            if (allowCredentials)
+                policy.AllowCredentials();
+        });
+    }
+    else
+    {
+        logger.LogWarning("CORS section found but no AllowedOrigins specified - CORS not configured");
+    }
+}
+else
+{
+    logger.LogInformation("No CORS configuration found - CORS not enabled");
+}
 
 // YARP per-route middleware using MapReverseProxy
 app.MapReverseProxy(proxyPipeline =>
@@ -330,6 +324,6 @@ app.MapReverseProxy(proxyPipeline =>
     });
 });
 
-logger.LogInformation("Warp core startup complete. Ready to accept requests.");
+logger.LogInformation("Warp startup complete. Ready to accept requests.");
 
 app.Run();

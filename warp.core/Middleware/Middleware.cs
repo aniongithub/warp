@@ -2,15 +2,12 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Warp.Core.Data;
-using Warp.Core.Helper;
+using System.Diagnostics;
 
 namespace Warp.Core.Middleware;
 
 public class MiddlewareOptions
 {
-    public bool TracingEnabled { get; set; } = true;
-    public string? TracingProvider { get; set; } = "Warp.Core.Helper.LoggerTracingProvider";
-    public string TracingProviderName { get; set; } = "DefaultTracingProvider";
     public List<string> ApplyOn { get; set; } = new();
 }
 
@@ -28,8 +25,8 @@ public abstract class MiddlewareBase<TOptions> : IWarpMiddleware
 {
     protected TOptions Options { get; }
     protected ILogger Logger { get; }
-    protected TracingProvider _tracingProvider = default!;
     protected IDataContext DataContext { get; }
+    private static readonly ActivitySource ActivitySource = new("Warp");
 
     protected MiddlewareBase(string name, ILogger logger, IDataContext context, TOptions options)
     {
@@ -41,27 +38,6 @@ public abstract class MiddlewareBase<TOptions> : IWarpMiddleware
         // Lazy initialization: set default ApplyOn if not configured
         if (Options.ApplyOn.Count == 0)
             Options.ApplyOn.AddRange(["Sync", "AsyncSubmit", "AsyncStatus", "AsyncResult", "AsyncCancel"]);
-        
-        if (Options.TracingEnabled && Options.TracingProvider != null)
-        {
-            var providerType = Type.GetType(Options.TracingProvider!);
-            if (providerType == null)
-                throw new InvalidOperationException($"Tracing provider type '{Options.TracingProvider}' could not be found.");
-            
-            // Special handling for LoggerTracingProvider to pass the logger
-            if (providerType == typeof(Helper.LoggerTracingProvider))
-            {
-                _tracingProvider = new Helper.LoggerTracingProvider(Name, Logger);
-            }
-            else
-            {
-                _tracingProvider = (TracingProvider?)Activator.CreateInstance(providerType, Name)
-                    ?? throw new InvalidOperationException($"Tracing provider '{Options.TracingProvider}' could not be instantiated.");
-            }
-            
-            if (_tracingProvider == null)
-                throw new InvalidOperationException($"Tracing provider '{Options.TracingProvider}' not found.");
-        }
     }
 
     protected bool ShouldApplyToRequest(HttpContext context)
@@ -117,39 +93,21 @@ public abstract class MiddlewareBase<TOptions> : IWarpMiddleware
             return;
         }
 
-        IResult result;
+        using var activity = ActivitySource.StartActivity($"Middleware.{Name}");
+        activity?.SetTag("middleware.name", Name);
+
+        IResult result = await ProcessAsync(context);
         
-        if (Options.TracingEnabled && _tracingProvider != null)
+        // Always execute result (it will handle Stop/Continue internally)
+        await result.ExecuteAsync(context);
+        
+        // Only call next if the result indicates Continue
+        if (result is Result warpResult && warpResult.Action == PipelineAction.Continue)
         {
-            // Begin a new tracing span for this middleware invocation
-            using var span = _tracingProvider.Start();
-            
-            result = await ProcessAsync(context);
-            
-            // Always execute result (it will handle Stop/Continue internally)
-            await result.ExecuteAsync(context);
-            
-            // Only call next if the result indicates Continue
-            if (result is Result warpResult && warpResult.Action == PipelineAction.Continue)
-            {
-                await next(context);
-            }
-            
-            span.SetStatus(context.Response.StatusCode);
+            await next(context);
         }
-        else
-        {
-            result = await ProcessAsync(context);
-            
-            // Always execute result (it will handle Stop/Continue internally)
-            await result.ExecuteAsync(context);
-            
-            // Only call next if the result indicates Continue
-            if (result is Result warpResult && warpResult.Action == PipelineAction.Continue)
-            {
-                await next(context);
-            }
-        }
+        
+        activity?.SetTag("response.status_code", context.Response.StatusCode);
     }
 
     /// <summary>
