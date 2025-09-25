@@ -1,5 +1,39 @@
 # Warp Plasma Job Processor Configuration
 
+# Multi-consumer job configurations (new multi-consumer pattern)
+Jobs:
+  memoryalpha:
+    MaxConcurrentJobs: 3
+    PollingIntervalMs: 2000
+    Context:
+      Type: "Warp.Core.Job.Contexts.RedisJobContext, warp.core"
+      Options:
+        ConnectionString: "redis:6379"
+        Database: 0
+        Channel: "MemoryAlpha"
+    Delivery:
+      Type: "Warp.Core.Job.Delivery.WebhookResultDelivery, warp.core"
+      Options:
+        WebhookUrl: "https://api.example.com/webhooks/memoryalpha"
+        TimeoutSeconds: 30
+        MaxRetries: 3
+        RetryDelaySeconds: 5
+        Headers:
+          Authorization: "Bearer YOUR_API_TOKEN"
+          X-Source: "warp-plasma"
+
+  other_service:
+    MaxConcurrentJobs: 5
+    PollingIntervalMs: 5000
+    Context:
+      Type: "Warp.Core.Job.Contexts.RedisJobContext, warp.core"
+      Options:
+        ConnectionString: "redis:6379"
+        Database: 0
+        Channel: "OtherService"
+    # No Delivery section = polling only
+
+# Legacy configuration (fallback when Jobs section is not configured)
 # Job processing engine configuration
 PollingIntervalMs: 2000
 MaxConcurrentJobs: 10  # Maximum number of jobs to process concurrently
@@ -12,7 +46,7 @@ HttpTimeoutMs: 900000
 Redis:
   ConnectionString: "redis:6379"
   Database: 0
-  Channel: "memoryalpha"
+  Channel: "memoryalpha_async"
 
 # Target API endpoint for job execution
 Endpoint: "http://memoryalpha-rag-api:8000"

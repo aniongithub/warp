@@ -19,7 +19,9 @@
         "fernandoescolar.vscode-solution-explorer",
         "qwtel.sqlite-viewer",
         "zaaack.markdown-editor",
-        "cweijan.vscode-redis-client"
+        "ms-python.debugpy",
+        "ms-python.python",
+        "Youngki.easy-redis"
       ]
     }
   },

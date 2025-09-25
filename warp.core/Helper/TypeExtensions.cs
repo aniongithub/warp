@@ -1,6 +1,7 @@
 using System;
 using System.Text.RegularExpressions;
 using Warp.Core.Middleware;
+using Warp.Core.Job.Delivery;
 
 namespace Warp.Core.Helper;
 
@@ -69,6 +70,25 @@ public static class TypeStringConverter
         while (currentType != null && currentType != typeof(object))
         {
             if (currentType.IsGenericType && currentType.GetGenericTypeDefinition() == typeof(MiddlewareBase<>))
+            {
+                return currentType;
+            }
+            currentType = currentType.BaseType;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Finds the ResultDeliveryBase&lt;&gt; base type in the inheritance chain of the given type.
+    /// </summary>
+    /// <param name="type">The type to check</param>
+    /// <returns>The ResultDeliveryBase&lt;&gt; base type, or null if not found</returns>
+    public static Type? GetResultDeliveryBaseType(this Type type)
+    {
+        var currentType = type;
+        while (currentType != null && currentType != typeof(object))
+        {
+            if (currentType.IsGenericType && currentType.GetGenericTypeDefinition() == typeof(ResultDeliveryBase<>))
             {
                 return currentType;
             }

@@ -140,23 +140,63 @@
             }
         },
 
+        {
+            "name": "Warp (async)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp/bin/Debug/net9.0/warp.dll",
+            "justMyCode": false,
+            "env": {
+                "MEMORYALPHA_RAG_API_ADDR": "http://memoryalpha-rag-api:8000",
+                "WARP_CONFIG_BASE_DIR": "./examples/async", // This is all we need to configure
+                "REDIS_CONNECTION_STRING": "redis:6379"
+            }
+        },
+        {
+            "name": "Warp.Plasma (async)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp.plasma/bin/Debug/net9.0/warp.plasma.dll",
+            "env": {
+                "WARP_CONFIG_BASE_DIR": "./examples/async" // This is all we need to configure
+            }
+        },
+        {
+            "name": "Memory Alpha Chat",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/examples/async/chat/main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/examples/async/chat"
+        }
     ],
     "compounds": [
         {
             "name": "Warp API Gateway",
-            "configurations": ["Warp", "DevApi", "AdminApi", "Plasma"]            
+            "configurations": ["Warp", "DevApi", "AdminApi", "Plasma"],
+            "stopAll": true
         },
         {
             "name": "Warp Simple Example",
-            "configurations": ["Warp (simple)"]
+            "configurations": ["Warp (simple)"],
+            "stopAll": true
         },
         {
             "name": "Warp ApiKeys Example",
-            "configurations": ["Warp (apikeys)", "DevApi (apikeys)"]
+            "configurations": ["Warp (apikeys)", "DevApi (apikeys)"],
+            "stopAll": true
         },
         {
             "name": "Warp Quotas Example",
-            "configurations": ["Warp (quotas)", "DevApi (quotas)", "AdminApi (quotas)"]
+            "configurations": ["Warp (quotas)", "DevApi (quotas)", "AdminApi (quotas)"],
+            "stopAll": true
+        },
+        {
+            "name": "Async Chat Demo",
+            "configurations": ["Warp (async)", "Warp.Plasma (async)", "Memory Alpha Chat"],
+            "stopAll": true
         }
     ]
 }

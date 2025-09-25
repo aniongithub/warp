@@ -1,0 +1,45 @@
+# Warp Plasma Job Processor Configuration for Async Example
+
+# Multi-consumer job configurations demonstrating different delivery mechanisms
+Jobs:
+  # MemoryAlpha job processing with webhook delivery
+  memoryalpha:
+    MaxConcurrentJobs: 3
+    PollingIntervalMs: 2000
+    Endpoint: "${MEMORYALPHA_RAG_API_ADDR:http://memoryalpha-rag-api:8000}"
+    Context:
+      Type: "Warp.Core.Job.Contexts.RedisJobContext, warp.core"
+      Options:
+        ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379}"
+        Database: 0
+        Channel: "memoryalpha_async"
+    Delivery:
+      Type: "Warp.Core.Job.Delivery.WebhookResultDelivery, warp.core"
+      Options:
+        WebhookUrl: "${WEBHOOK_URL:http://localhost:8888/webhook}"
+        TimeoutSeconds: 30
+        MaxRetries: 3
+        RetryDelaySeconds: 5
+        Headers:
+          X-Source: "warp-plasma"
+          X-Job-Type: "memoryalpha_async"
+
+# Global settings (fallback for legacy configuration)
+HttpTimeoutMs: 900000 # 15 minutes
+
+# Legacy fallback configuration (when Jobs section is not used)
+PollingIntervalMs: 2000
+MaxConcurrentJobs: 5
+IdleTimeoutMs: 900000
+
+Redis:
+  ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379}"
+  Database: 0
+
+# Job processor behavior
+Processor:
+  EnableHealthCheck: true
+  HealthCheckIntervalMs: 30000
+  RetryFailedJobs: true
+  MaxRetryAttempts: 3
+  RetryDelayMs: 10000

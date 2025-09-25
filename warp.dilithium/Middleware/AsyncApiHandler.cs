@@ -167,7 +167,7 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
                 _concurrencyLimiter.CurrentCount, Options.MaxConcurrentDispatches);
                 
             var extractedInputs = await ExtractInputsAsync(context);
-            var parameterMappings = BuildParameterMappings();
+            var parameterMappings = BuildParameterMappings(context, extractedInputs);
             var routingInfo = ExtractRoutingInfo(context);
             var user = await GetUserAsync(context);
             var jobId = await CreateAndEnqueueJobAsync(user, extractedInputs, parameterMappings, routingInfo);
@@ -261,10 +261,11 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
     protected abstract Task CancelJobAsync(string jobId, string userId);
 
     // Transform helper methods
-    private Dictionary<string, ParameterMapping> BuildParameterMappings()
+    private Dictionary<string, ParameterMapping> BuildParameterMappings(HttpContext context, Dictionary<string, object?> extractedInputs)
     {
         var mappings = new Dictionary<string, ParameterMapping>();
         
+        // First, add explicitly configured mappings
         foreach (var (paramName, inputMapping) in Options.Input)
         {
             mappings[paramName] = new ParameterMapping
@@ -283,6 +284,52 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
                     Options = inputMapping.Transform.Options
                 } : null
             };
+        }
+        
+        // Then, add mappings for any auto-extracted parameters that don't have explicit mappings
+        foreach (var paramName in extractedInputs.Keys)
+        {
+            if (!mappings.ContainsKey(paramName))
+            {
+                // Determine the source based on where the parameter likely came from
+                var source = new Warp.Core.Job.InputSource();
+                
+                if (paramName == "_httpMethod")
+                {
+                    // Special case: _httpMethod is internal metadata, no need to map back
+                    source.Query = paramName;
+                }
+                else if (context.Request.Query.ContainsKey(paramName))
+                {
+                    // Parameter came from query string
+                    source.Query = paramName;
+                }
+                else if (context.Request.Headers.ContainsKey(paramName))
+                {
+                    // Parameter came from headers
+                    source.Header = paramName;
+                }
+                else
+                {
+                    // Default to body for other parameters (form data, JSON, etc.)
+                    source.Body = paramName;
+                }
+                
+                mappings[paramName] = new ParameterMapping
+                {
+                    From = source,
+                    Required = false,
+                    Default = null,
+                    Transform = null
+                };
+                
+                var sourceDescription = !string.IsNullOrEmpty(source.Header) ? $"Header:{source.Header}" :
+                                       !string.IsNullOrEmpty(source.Query) ? $"Query:{source.Query}" :
+                                       !string.IsNullOrEmpty(source.Body) ? $"Body:{source.Body}" : "Unknown";
+                
+                Logger.LogDebug("Created auto-mapping for parameter {ParamName} from {Source}", 
+                    paramName, sourceDescription);
+            }
         }
         
         return mappings;
@@ -345,6 +392,9 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
     private async Task<Dictionary<string, object?>> ExtractInputsAsync(HttpContext context)
     {
         var extractedInputs = new Dictionary<string, object?>();
+
+        // Preserve the original HTTP method for job processing
+        extractedInputs["_httpMethod"] = context.Request.Method;
 
         // Auto-extract all query parameters
         foreach (var query in context.Request.Query)

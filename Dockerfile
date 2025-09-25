@@ -39,6 +39,18 @@ RUN apt-get update && apt-get install -y curl gnupg \
   && apt-get update && apt-get install -y google-cloud-cli \
   && apt-get clean
 
+# Install Python 3 and pip
+RUN apt-get update &&\
+    apt-get install -y python3 python3-pip &&\
+    apt-get clean &&\
+    rm -rf /var/lib/apt/lists/*
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+
+# Install Python dependencies
+COPY ./requirements.txt /tmp/pip-tmp/
+RUN pip3 install --no-cache-dir -r /tmp/pip-tmp/requirements.txt &&\
+    rm -rf /tmp/pip-tmp
+
 USER vscode
 
 # Builder image for the Warp API Gateway

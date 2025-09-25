@@ -43,14 +43,14 @@ public class RedisJobContext : JobContextBase
         }
     }
 
-    public override async Task<T> DequeueJobAsync<T>()
+    public override async Task<DequeueResult<T>> DequeueJobAsync<T>()
     {
         // Pop job ID from the QUEUED queue (FIFO)
         var jobIdValue = await _db.ListLeftPopAsync(QueueKey(JobStatus.Queued));
         
         if (!jobIdValue.HasValue || string.IsNullOrEmpty(jobIdValue))
         {
-            throw new InvalidOperationException("No job available to dequeue.");
+            return DequeueResult<T>.NoJob(); // No job available - this is normal, not an exception
         }
         
         var jobId = jobIdValue.ToString();
@@ -78,7 +78,7 @@ public class RedisJobContext : JobContextBase
         try
         {
             var job = DeserializeJob<T>(jobDataString)!;
-            if (job == null) throw new InvalidOperationException("Failed to deserialize job.");
+            // if (job == null) throw new InvalidOperationException("Failed to deserialize job.");
             
             // Move job to Running status
             if (string.IsNullOrEmpty(job.User?.Id)) throw new ArgumentException("User.Id required");
@@ -93,7 +93,7 @@ public class RedisJobContext : JobContextBase
             await _db.ListRightPushAsync(QueueKey(JobStatus.Running), job.Id);
             await _db.KeyDeleteAsync(fromKey);
             
-            return job;
+            return DequeueResult<T>.Success(job);
 
         }
         catch (Exception ex)
@@ -144,7 +144,7 @@ public class RedisJobContext : JobContextBase
         return jobs.ToAsyncEnumerable();
     }
 
-    public async Task UpdateJobAsync<T>(T job, JobStatus newStatus, string? error = null, string? output = null) where T : class, IJob
+    public override async Task UpdateJobAsync<T>(T job, JobStatus newStatus, string? error = null, string? output = null)
     {
         if (string.IsNullOrEmpty(job.User?.Id)) throw new ArgumentException("User.Id required");
         

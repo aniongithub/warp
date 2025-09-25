@@ -1,0 +1,80 @@
+$include: datacontext.yml # Use an include to share configuration definitions
+
+ReverseProxy:
+  Clusters:
+    # Cluster that forwards requests to the MemoryAlpha RAG API service.
+    memoryalpha_cluster:
+      Destinations:
+        memoryalpha:
+          # We can use an environment variable to configure the service address
+          Address: ${MEMORYALPHA_RAG_API_ADDR}
+
+  Routes:
+    # Synchronous API route - traditional request-response pattern
+    # memoryalpha_sync:
+    #   ClusterId: "memoryalpha_cluster"
+    #   Match:
+    #     Path: "/examples/async/sync/{**catch-all}"
+    #   Transforms:
+    #     - PathRemovePrefix: "/examples"
+    #     - PathRemovePrefix: "/async" 
+    #     - PathRemovePrefix: "/sync"
+    #   Metadata:
+    #     Preprocess:
+    #       # Rate limiting for sync API
+    #       - Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
+    #         Options:
+    #           RateLimitHz: 2.0
+          
+    #       # User identification and permissions (use JWT email as user ID)
+    #       - Type: "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium"
+    #         Options:
+    #           UserIdHeader: "X-JWT-Email"
+    #           CreateUserIfNotFound: true
+    #           DefaultPermissions:
+    #             - "user"
+
+    #     Predispatch:
+    #       # Validate requests against the OpenAPI spec
+    #       - Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
+    #         Options:
+    #           SpecUri: https://github.com/aniongithub/memoryalpha-rag-api/releases/download/${MEMORYALPHA_RAG_API_VERSION}/memoryalpha-rag-api-spec.json
+
+    # Asynchronous API route - handles all async operations (submit, status, result, cancel)
+    memoryalpha_async:
+      ClusterId: "memoryalpha_cluster"
+      Match:
+        Path: "/examples/async/{**catch-all}"
+      Transforms:
+        - PathRemovePrefix: "/examples"
+        - PathRemovePrefix: "/async"
+      Metadata:
+        Preprocess:
+          # Rate limiting for async API
+          - Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
+            Options:
+              RateLimitHz: 5.0
+          
+          # User identification and permissions
+          - Type: "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium"
+            Options:
+              UserIdHeader: "X-JWT-Email"
+              CreateUserIfNotFound: true
+              DefaultPermissions:
+                - "user"
+
+        Predispatch:
+          # Validate requests for job submission only
+          - Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
+            Options:
+              SpecUri: https://github.com/aniongithub/memoryalpha-rag-api/releases/download/${MEMORYALPHA_RAG_API_VERSION}/memoryalpha-rag-api-spec.json
+              
+          # Handle all async operations (submit, status, result, cancel)
+          - Type: "Warp.Dilithium.Middleware.RedisAsyncApiHandler, warp.dilithium"
+            Options:
+              ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379}"
+              DatabaseIndex: 0
+              Channel: "memoryalpha_async"
+              MaxConcurrentDispatches: 10
+              DispatchTimeoutMs: 30000
+              UserIdHeader: "X-JWT-Email"

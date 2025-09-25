@@ -58,8 +58,9 @@ public abstract class MiddlewareBase<TOptions> : IWarpMiddleware
         var resultIndex = Array.FindIndex(segments, s => s.Equals("result", StringComparison.OrdinalIgnoreCase));
         var cancelIndex = Array.FindIndex(segments, s => s.Equals("cancel", StringComparison.OrdinalIgnoreCase));
 
-        // Check submit operation (should be last segment, POST method)
-        if (submitIndex != -1 && submitIndex == segments.Length - 1 && method.Equals("POST", StringComparison.OrdinalIgnoreCase))
+        // Check submit operation (should be last segment, POST or GET method)
+        if (submitIndex != -1 && submitIndex == segments.Length - 1 && 
+            (method.Equals("POST", StringComparison.OrdinalIgnoreCase) || method.Equals("GET", StringComparison.OrdinalIgnoreCase)))
         {
             return "AsyncSubmit";
         }
