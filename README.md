@@ -22,176 +22,24 @@ Warp uses a declarative, config-driven middleware pipeline. Each route can speci
 
 Middlewares are registered in `appsettings.json` under `PipelineComponents` and referenced by name in route metadata.
 
-#### Example Middleware Types
-
-- **PermissionsChecker**: Enforces required permissions for a user or API key.
-- **QuotaChecker**: Enforces prepaid/postpaid quotas per user/key and quota name.
-- **RateLimiter**: Standard token bucket rate limiting per user/key.
-- **JwtValidator**: Validates JWT tokens and extracts user info.
-- **ApiKeyValidator**: Validates API keys and loads associated permissions.
-
-#### Asynchronous APIs with Warp & Warp.Plama
-
-Warp can convert existing synchronous APIs into asynchronous APIs very easily. It does this using a middleware that persists incoming requests to a backend like Redis and then using a job-puller + executor called Warp.Plasma that runs inside the synchronous API container.
-
-```mermaid
-flowchart LR
-    subgraph Client
-        A[Incoming Synchronous API Request]
-    end
-
-    subgraph Warp Middleware
-        B["Persist Request to Backend (e.g., Redis)"]
-    end
-
-    F[(Blob Storage)]
-    subgraph Backend
-        C[(Redis Queue)]
-    end
-
-    subgraph API Container
-        D[Warp.Plasma - Job Puller + Executor]
-        E[Process Job via Existing Synchronous API Logic]
-    end
-
-    A --> B --> C
-    B -->|Job Metadata + Blob References| F
-    C --> D
-    D --> E
-    E -->|Response Stored/Returned| C
-    E -->|Binary Output Stored| F
-```
-
-In this configuration, we may also need to store binary blobs that are passed in to the synchronous API between job storage and retrieval. This happens via config in our `RedisAsyncApiHandler` as follows.
-
-```
-{
-  "Name": "RedisAsyncApiHandler",
-  "Type": "Warp.Dilithium.Middleware.RedisAsyncApiHandler, warp.dilithium",
-  "Options": {
-    "CreateUserIfNotFound": true,
-    "DefaultPermissions": [ "developer", "user" ],
-    "ConnectionString": "redis:6379,defaultDatabase=0",
-    "DatabaseIndex": 0,
-    "Channel": "memoryalpha",
-    "Input": {
-      "top_k": {
-        "From": { "Query": "top_k" },
-        "Required": false,
-        "Default": "5"
-      },
-      "x-file-blob": {
-        "From": { "Body": "file" },
-        "Required": true,
-        "Transform": {
-          "Type": "Warp.Dilithium.Transforms.VolumeBlobTransform, warp.dilithium",
-          "Options": {
-            "VolumePath": "/uploads"
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-This config uses a shared volume from the host, mounted at /uploads in both containers and `Warp.Dilithium.Transforms.VolumeBlobTransform` to perform the conversion.
-
-Alternatively, here's a version that uses `Warp.Dilithium.Transforms.S3BlobTransform`
-
-```
-{
-  "Name": "RedisAsyncApiHandler",
-  "Type": "Warp.Dilithium.Middleware.RedisAsyncApiHandler, warp.dilithium",
-  "Options": {
-    "CreateUserIfNotFound": true,
-    "DefaultPermissions": [ "developer", "user" ],
-    "ConnectionString": "redis:6379,defaultDatabase=0",
-    "DatabaseIndex": 0,
-    "Channel": "memoryalpha",
-    "Input": {
-      "top_k": {
-        "From": { "Query": "top_k" },
-        "Required": false,
-        "Default": "5"
-      },
-      "x-file-blob": {
-        "From": { "Body": "file" },
-        "Required": true,
-        "Transform": {
-          "Type": "Warp.Dilithium.Transforms.S3BlobTransform, warp.dilithium",
-          "Options": {
-            "BucketName": "my-bucketName-here"
-            "AccessKey": "my-access-key-here"
-            "SecretKey": "my-secret-key-here"
-            "Region": "my-region-here" # defaults to us-east-1
-            "Endpoint": "my-minio-endpoint-here" # Omit if not using minio
-          }
-        }
-      }
-    }
-  }
-}
-```
-
 ### Configuration
 
-All routes, clusters, and middleware are configured in `config/warp.jsonc`. Example:
-
-```jsonc
-{
-  "ReverseProxy": {
-    "Routes": {
-      "stapi_basic": {
-        "ClusterId": "memoryalpha_cluster", // Destination cluster
-        "Match": { "Path": "/api/basic/{**catch-all}" }, // How to match paths
-        "Metadata": {
-          // Run before any path transformations are applied
-          "Preprocess": "OpenTelemetryStart,ApiKeyValidator,BasicRateLimiter,BasicQuotaChecker",
-          // Run after path transformations, but before dispatch
-          "Predispatch": "MemoryAlphaOpenApiValidator",
-          // Run after the dispatch, execution - just before returning the response
-          "Postprocess": "OpenTelemetryEnd"
-        }
-      }
-    }
-  },
-  "PipelineComponents": [
-    {
-      // Checks to see if the current user with "Keyheaders" header
-      // x-jwt-email by default is within their quota limits before
-      // allowing the request to proceed
-      "Name": "BasicQuotaChecker",
-      "Type": "Warp.Middleware.QuotaChecker, warp",
-      "Options": {
-        "QuotaName": "basic_quota",
-        "QuotaUsage": 1.0,
-        "QuotaLimit": 10.0,
-        "CreateQuotaIfNotFound": true
-      }
-    }
-  ]
-}
-```
-
-*Note*: Warp config jsonc files support includes and automatic environment variable expansion to make it easier to organize and pass in secrets. Please see the config files for examples of this usage.
-
-### Quota & Billing Model
-
-- **Quotas** are centrally named (e.g., `basic_quota`, `pro_quota`) and can be prepaid (hard-limit) or postpaid (soft-limit, bill later).
-- **QuotaChecker** middleware enforces usage and can auto-create quotas for new users/keys.
-- **Billing** is performed out-of-band (e.g., via a cron job that processes quota deltas or negative balances).
-
-### Rate Limiting
-
-- **RateLimiter** uses a token bucket algorithm for predictable, burst-tolerant rate limiting.
-- Configurable per route and per user/key.
+All routes, clusters, and middleware are configured in `config/warp.jsonc` with support for includes and automatic environment variable expansion.
 
 ### Extending Warp
 
 - Add new middleware by implementing `MiddlewareBase<TOptions>`.
 - Register your middleware in `PipelineComponents` and reference it in route metadata.
 - All middleware can access the shared `IDataContext` for user, key, quota, and request state.
+
+## Features & Examples
+
+This architecture allows us to put Warp together in a variety of ways with pure config changes. Here are some examples that demonstrate one or more specific Warp Gateway applications via pure configuration:
+
+- **[OpenAPI Validation, Rate-limiting](examples/simple/README.md)** - Minimal proxy configuration with basic rate limiting and OpenAPI validation
+- **[API Keys](examples/apikeys/README.md)** - API key authentication and developer portal key management
+- **[Quotas & Permissions](examples/quotas/README.md)** - Permission-based quota tracking with usage-based billing and monetization
+- **[Async-ification of synchronous APIs](examples/async/README.md)** - Transform synchronous APIs to asynchronous job processing with real-time notifications
 
 ## Persistence and Data Storage
 
@@ -228,37 +76,6 @@ This repository includes pre-configured launch settings for development and debu
 - **Warp API Gateway**: Launches the main gateway (`Warp`), Developer API (`DevApi`), and Admin API (`AdminApi`) projects together for a full backend environment.
 
 You can select these compound configurations from the VS Code Run/Debug panel to start all related services at once. This also means you can use a single VS code window to debug flow all the way from the developer console to the middleware in your API gateway seamlessly.
-
-### **Test the API**
-
-Ensure that the "Warp API Gateway" launch configuration is active before testing and then run `scripts/memoryalpha_chat.sh`
-
-This script will:
-
-- Prompt you to login to Google (`google-login.sh`). NOTE: This only uses the gcloud CLI to login and generate a JWT via `gcloud auth print-identity-token`. This token is only used for your local debugging session and never stored or sent anywhere else.
-- Use the JWT to fetch a WARP API key for your username (`get-api-key.sh`)
-- Use the WARP API key to allow you to chat with the [MemoryAlpha RAG API](https://github.com/aniongithub/memoryalpha-rag-api)
-
-![](https://github.com/aniongithub/memoryalpha-rag-api/raw/main/assets/20250806_232014_chat.gif)
-
-You can use the OpenAPI specs in
-
-- `spec/memoryalpha-rag-api-spec.json`
-- `warp.apis.admin.yml`
-- `warp.apis.developer.yml`
-
-to formulate additional commands for testing different functionalities of Warp or your API.
-
-### DataContexts
-
-Warp supports a variety of backends for persistence of its middleware data to deal with users, quotas, rates and API keys. These are:
-
-- **Json file** - This is not meant for production use and simply uses a JSON file to store all data.
-- **Sqlite** - This can be used for single-instance API gateways in small-scale deployments as there is no scalable, efficient way to share a single sqlite Db across multiple nodes.
-- **PostgreSQL** - This DataContext implementation connects to a PostgreSQL instance using an Npgsql-type connection string. In order to enable this, please make the appropriate changes to `config/shared/datacontext.jsonc` and restart Warp.
-- **Firestore** - This DataContext implementation connects to a Firestore instance (or, for local development a Firestore emulator). In order to enable this, please make the appropriate changes to `config/shared/datacontext.jsonc` and restart warp.
-
-Note: Changes to local configurations used for testing PostgreSQL and Firestore should not be committed to git, but only used locally.
 
 ## Contributing
 

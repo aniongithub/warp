@@ -115,3 +115,5 @@ uploads
 Untitled-1
 spec/
 swagger-dummy.json
+
+.easyRedis.redis
