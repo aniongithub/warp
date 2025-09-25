@@ -1,5 +1,0 @@
-# JSON Data Context Configuration
-DataContext:
-  Type: "Warp.Core.Data.Contexts.JsonDataContext, warp.core"
-  args:
-    filePath: "data/data.json"

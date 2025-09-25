@@ -1,66 +1,6 @@
 {
     "version": "0.2.0",
-    "configurations": [
-        {
-            "name": "Warp",
-            "type": "coreclr",
-            "request": "launch",
-            "preLaunchTask": "build-dotnet",
-            "program": "${workspaceFolder}/warp/bin/Debug/net9.0/warp.dll",
-            "args": [],
-            "cwd": "${workspaceFolder}",
-            "stopAtEntry": false,
-            "env": {
-                "ASPNETCORE_ENVIRONMENT": "Development",
-                "ASPNETCORE_URLS": "http://0.0.0.0:5000",
-                "FIRESTORE_EMULATOR_HOST": "firestore:8080"
-            }
-        },
-        {
-            "name": "DevApi",
-            "type": "coreclr",
-            "request": "launch",
-            "preLaunchTask": "build-dotnet",
-            "program": "${workspaceFolder}/warp.apis.developer/bin/Debug/net9.0/warp.apis.developer.dll",
-            "args": [],
-            "cwd": "${workspaceFolder}",
-            "stopAtEntry": false,
-            "env": {
-                "ASPNETCORE_ENVIRONMENT": "Development",
-                "ASPNETCORE_URLS": "http://127.0.0.1:5002",
-                "FIRESTORE_EMULATOR_HOST": "firestore:8080"
-            }
-        },
-        {
-            "name": "AdminApi",
-            "type": "coreclr",
-            "request": "launch",
-            "preLaunchTask": "build-dotnet",
-            "program": "${workspaceFolder}/warp.apis.admin/bin/Debug/net9.0/warp.apis.admin.dll",
-            "args": [],
-            "cwd": "${workspaceFolder}",
-            "stopAtEntry": false,
-            "env": {
-                "ASPNETCORE_ENVIRONMENT": "Development",
-                "ASPNETCORE_URLS": "http://127.0.0.1:5003",
-                "FIRESTORE_EMULATOR_HOST": "firestore:8080"
-            }
-        },
-        {
-            "name": "Plasma",
-            "type": "coreclr",
-            "request": "launch",
-            "preLaunchTask": "build-dotnet",
-            "program": "${workspaceFolder}/warp.plasma/bin/Debug/net9.0/warp.plasma.dll",
-            "args": [],
-            "cwd": "${workspaceFolder}",
-            "stopAtEntry": false,
-            "env": {
-                "ASPNETCORE_ENVIRONMENT": "Development",
-                "FIRESTORE_EMULATOR_HOST": "firestore:8080"
-            }
-        },
-        
+    "configurations": [        
         {
             "name": "Warp (simple)",
             "type": "coreclr",
@@ -74,7 +14,10 @@
                 "MEMORYALPHA_RAG_API_ADDR": "http://memoryalpha-rag-api:8000",
                 "WARP_CONFIG_BASE_DIR": "./examples/simple" // This is all we need to configure
                 // The rest of the configuration is fully config driven via warp.yml
-            }
+            },
+            "presentation": {
+                "hidden": true
+            }   
         },
 
         {
@@ -87,6 +30,9 @@
                 "WARP_CONFIG_BASE_DIR": "./examples/apikeys"
             },
             "cwd": "${workspaceFolder}",
+            "presentation": {
+                "hidden": true
+            }
         },
         {
             "name": "Warp (apikeys)",
@@ -99,6 +45,9 @@
                 "MEMORYALPHA_RAG_API_ADDR": "http://memoryalpha-rag-api:8000",
                 "WARP_CONFIG_BASE_DIR": "./examples/apikeys" // This is all we need to configure
                 // The rest of the configuration is fully config driven via warp.yml
+            },
+            "presentation": {
+                "hidden": true
             }
         },
 
@@ -113,6 +62,9 @@
                 "WARP_CONFIG_BASE_DIR": "./examples/quotas"
             },
             "cwd": "${workspaceFolder}",
+            "presentation": {
+                "hidden": true
+            }
         },
         {
             "name": "AdminApi (quotas)",
@@ -125,6 +77,9 @@
                 "WARP_CONFIG_BASE_DIR": "./examples/quotas"
             },
             "cwd": "${workspaceFolder}",
+            "presentation": {
+                "hidden": true
+            }            
         },
         {
             "name": "Warp (quotas)",
@@ -137,6 +92,9 @@
                 "MEMORYALPHA_RAG_API_ADDR": "http://memoryalpha-rag-api:8000",
                 "WARP_CONFIG_BASE_DIR": "./examples/quotas" // This is all we need to configure
                 // The rest of the configuration is fully config driven via warp.yml
+            },
+            "presentation": {
+                "hidden": true
             }
         },
 
@@ -151,6 +109,9 @@
                 "MEMORYALPHA_RAG_API_ADDR": "http://memoryalpha-rag-api:8000",
                 "WARP_CONFIG_BASE_DIR": "./examples/async", // This is all we need to configure
                 "REDIS_CONNECTION_STRING": "redis:6379"
+            },
+            "presentation": {
+                "hidden": true
             }
         },
         {
@@ -161,6 +122,9 @@
             "program": "${workspaceFolder}/warp.plasma/bin/Debug/net9.0/warp.plasma.dll",
             "env": {
                 "WARP_CONFIG_BASE_DIR": "./examples/async" // This is all we need to configure
+            },
+            "presentation": {
+                "hidden": true
             }
         },
         {
@@ -169,32 +133,30 @@
             "request": "launch",
             "program": "${workspaceFolder}/examples/async/chat/main.py",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/examples/async/chat"
+            "cwd": "${workspaceFolder}/examples/async/chat",
+            "presentation": {
+                "hidden": true
+            }
         }
     ],
     "compounds": [
         {
-            "name": "Warp API Gateway",
-            "configurations": ["Warp", "DevApi", "AdminApi", "Plasma"],
-            "stopAll": true
-        },
-        {
-            "name": "Warp Simple Example",
+            "name": "Warp Simple",
             "configurations": ["Warp (simple)"],
             "stopAll": true
         },
         {
-            "name": "Warp ApiKeys Example",
+            "name": "Warp JWT & ApiKeys",
             "configurations": ["Warp (apikeys)", "DevApi (apikeys)"],
             "stopAll": true
         },
         {
-            "name": "Warp Quotas Example",
+            "name": "Warp Permissions & Quotas",
             "configurations": ["Warp (quotas)", "DevApi (quotas)", "AdminApi (quotas)"],
             "stopAll": true
         },
         {
-            "name": "Async Chat Demo",
+            "name": "Warp Async API",
             "configurations": ["Warp (async)", "Warp.Plasma (async)", "Memory Alpha Chat"],
             "stopAll": true
         }

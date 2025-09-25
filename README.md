@@ -20,11 +20,7 @@ Warp uses a declarative, config-driven middleware pipeline. Each route can speci
 - **Predispatch**: Runs before dispatching to the backend (e.g., OpenAPI validation)
 - **Postprocess**: Runs after backend response (logging, tracing, etc.)
 
-Middlewares are registered in `appsettings.json` under `PipelineComponents` and referenced by name in route metadata.
-
-### Configuration
-
-All routes, clusters, and middleware are configured in `config/warp.jsonc` with support for includes and automatic environment variable expansion.
+Middlewares are registered in `appsettings.json` under `PipelineComponents` and referenced by name in route metadata. 
 
 ### Extending Warp
 
@@ -32,23 +28,27 @@ All routes, clusters, and middleware are configured in `config/warp.jsonc` with 
 - Register your middleware in `PipelineComponents` and reference it in route metadata.
 - All middleware can access the shared `IDataContext` for user, key, quota, and request state.
 
+### Configuration
+
+All routes, clusters, and middleware are configured in `config/warp.yml` with support for includes and automatic environment variable expansion.
+
 ## Features & Examples
 
 This architecture allows us to put Warp together in a variety of ways with pure config changes. Here are some examples that demonstrate one or more specific Warp Gateway applications via pure configuration:
 
-- **[OpenAPI Validation, Rate-limiting](examples/simple/README.md)** - Minimal proxy configuration with basic rate limiting and OpenAPI validation
-- **[API Keys](examples/apikeys/README.md)** - API key authentication and developer portal key management
+- **[Simple](examples/simple/README.md)** - Minimal API Gateway configuration with basic rate limiting and OpenAPI validation
+- **[JWT/API Key auth & Developer API](examples/apikeys/README.md)** - JWT and/or API key authentication with developer portal key management
 - **[Quotas & Permissions](examples/quotas/README.md)** - Permission-based quota tracking with usage-based billing and monetization
 - **[Async-ification of synchronous APIs](examples/async/README.md)** - Transform synchronous APIs to asynchronous job processing with real-time notifications
 
 ## Persistence and Data Storage
 
-- **Pluggable data context**: Use SQLite or JSON file for persistence (see `warp.core/Data/Contexts/`). You can also add new storage backends by implementing the `IDataContext` interface and placing your implementation in this directory.
+- **Pluggable data context**: Use SQLite, Postgres, Firebase or a simple JSON file for persistence (see `warp.core/Data/Contexts/`). You can also add new storage backends by implementing the `IDataContext` interface.
 - **Schema**: Users, API keys, quotas, and requests are all stored and managed centrally.
 
 ## Getting Started (Devcontainers)
 
-Warp is designed to be developed and run easily in a [VS Code Dev Container](https://code.visualstudio.com/docs/devcontainers/containers). To get started:
+Warp is designed to be developed and run in a [VS Code Dev Container](https://code.visualstudio.com/docs/devcontainers/containers). To get started:
 
 To use this environment, you should open the repository in [Visual Studio Code](https://code.visualstudio.com/) with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers). This ensures all required tools and dependencies are automatically installed and configured.
 

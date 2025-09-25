@@ -27,15 +27,24 @@ ReverseProxy:
         Path: "/developer/{**remainder}" # All paths under /developer are routed to the Developer API.
       Metadata:
         Preprocess:
-          # Middleware to check for "developer" permission.
+          # JWT authentication for Developer API access
+          - Type: "Warp.Dilithium.Middleware.JwtValidator, warp.dilithium"
+            Options:
+              ValidAudiences: ["memoryalpha-dev"] # Expected audience in JWT
+              ValidIssuers: ["https://accounts.google.com"] # Google as JWT issuer
+              ValidateSigningKey: true # Validate JWT signature
+              JwksUri: "https://www.googleapis.com/oauth2/v3/certs" # Google's JWKS endpoint
+              DefaultPermissions: # Default permissions for new JWT users
+                - "developer"
+                - "user"
+          
+          # Check for "developer" permission (will be satisfied by JWT users due to default permissions)
           - Type: "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium"
             Options:
               RequiredPermissions:
                 - "developer"
-              CreateUserIfNotFound: true # Create user if not found.
-              DefaultPermissions: # Set Default permissions for new users.
-                - "developer"
-                - "user"
+              CreateUserIfNotFound: false # Don't create here, JWT middleware already did
+              
         Predispatch: # Middleware to validate requests against the Developer API OpenAPI spec.
           - Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
             Options:
@@ -44,10 +53,10 @@ ReverseProxy:
     memoryalpha:
       ClusterId: "memoryalpha_cluster" # Route to the MemoryAlpha cluster.
       Match:
-        Path: "/examples/simple/{**catch-all}" # Non-canonical API path so we can proxy the same service under different routes.
+        Path: "/examples/apikeys/{**catch-all}" # Non-canonical API path so we can proxy the same service under different routes.
       Transforms:
         - PathRemovePrefix: "/examples" # Remove the /examples prefix before forwarding.
-        - PathRemovePrefix: "/simple" # Remove the /simple prefix before forwarding.
+        - PathRemovePrefix: "/apikeys" # Remove the /apikeys prefix before forwarding.
       Metadata: # Middleware configuration for this route.
         
         # This section runs when the request first arrives and is matched to this route.
@@ -57,9 +66,25 @@ ReverseProxy:
             Options:
               RateLimitHz: 1.0
 
-          # This middleware validates API keys for users. We can obtain API keys from the Developer API.
-          - Name: "ApiKeyValidator"
-            Type: "Warp.Dilithium.Middleware.ApiKeyValidator, warp.dilithium"
+          # OR middleware: Accept either JWT authentication OR API key authentication
+          - Type: "Warp.Dilithium.Middleware.OrMiddleware, warp.dilithium"
+            Options:
+              # Option 1: JWT authentication (same config as Developer API)
+              Middleware1:
+                Type: "Warp.Dilithium.Middleware.JwtValidator, warp.dilithium"
+                Options:
+                  ValidAudiences: ["memoryalpha-api"] # Different audience for API access
+                  ValidIssuers: ["https://accounts.google.com"]
+                  ValidateSigningKey: true
+                  JwksUri: "https://www.googleapis.com/oauth2/v3/certs"
+                  DefaultPermissions:
+                    - "user"
+                
+              # Option 2: API Key authentication (obtained from Developer API)
+              Middleware2:
+                Type: "Warp.Dilithium.Middleware.ApiKeyValidator, warp.dilithium"
+                Options:
+                  HeaderName: "X-Api-Key" # Custom header (default is "x-api-key")
 
         Predispatch:
           # This section runs after transforms have been applied but before the request is sent to the destination.
