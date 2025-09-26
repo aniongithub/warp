@@ -27,13 +27,7 @@ Jobs:
           X-Source: "warp-plasma"
           X-Job-Type: "memoryalpha_async"
 
-# Global settings (fallback for legacy configuration)
-HttpTimeoutMs: 900000 # 15 minutes
-
-# Legacy fallback configuration (when Jobs section is not used)
-PollingIntervalMs: 2000
-MaxConcurrentJobs: 5
-IdleTimeoutMs: 900000
+HttpTimeoutMs: 60000 # 1 minute
 
 Redis:
   ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379}"
