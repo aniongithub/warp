@@ -56,157 +56,156 @@ public sealed class JwtValidator : MiddlewareBase<JwtValidatorOptions>
         Logger.LogDebug("JwtValidator configured with: HeaderName={HeaderName}, Audiences={Audiences}, Issuers={Issuers}, JWKS={JWKS}, ValidateSigningKey={ValidateSigningKey}", _headerName, string.Join(",", _validAudiences), string.Join(",", _validIssuers), _jwksUri, _validateSigningKey);
     }
 
-    protected override async Task InvokeAsync(HttpContext context, RequestDelegate next)
+    protected override async Task<IResult> ProcessAsync(HttpContext context)
     {
         Logger.LogDebug("Starting JWT validation for request: {Path}", context.Request.Path);
         if (!context.Request.Headers.TryGetValue(_headerName, out var tokenHeader))
         {
             Logger.LogWarning("Missing JWT token in header: {HeaderName}", _headerName);
-            if (!context.Response.HasStarted)
-            {
-                context.Response.StatusCode = 401;
-                await context.Response.WriteAsync("Unauthorized");
-            }
+            return Results
+                .Problem(statusCode: 401, title: "Unauthorized", detail: "Missing JWT token.")
+                .Stop();
         }
-        else
+
+        var token = tokenHeader.ToString().Replace("Bearer ", "", StringComparison.OrdinalIgnoreCase).Trim();
+        Logger.LogDebug("Extracted token: {Token}", token);
+        var handler = new JwtSecurityTokenHandler();
+
+        var validationParameters = new TokenValidationParameters
         {
-            var token = tokenHeader.ToString().Replace("Bearer ", "", StringComparison.OrdinalIgnoreCase).Trim();
-            Logger.LogDebug("Extracted token: {Token}", token);
-            var handler = new JwtSecurityTokenHandler();
+            ValidateIssuer = _validIssuers.Count > 0,
+            ValidIssuers = _validIssuers,
+            ValidateAudience = _validAudiences.Count > 0 && !_validAudiences.Contains(_audienceWildcard),
+            ValidAudiences = _validAudiences,
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromMinutes(2),
+            ValidateIssuerSigningKey = _validateSigningKey && _signingKey != null,
+            IssuerSigningKey = _signingKey,
+            RequireSignedTokens = _validateSigningKey && _signingKey != null
+        };
 
-            var validationParameters = new TokenValidationParameters
-            {
-                ValidateIssuer = _validIssuers.Count > 0,
-                ValidIssuers = _validIssuers,
-                ValidateAudience = _validAudiences.Count > 0 && !_validAudiences.Contains(_audienceWildcard),
-                ValidAudiences = _validAudiences,
-                ValidateLifetime = true,
-                ClockSkew = TimeSpan.FromMinutes(2),
-                ValidateIssuerSigningKey = _validateSigningKey && _signingKey != null,
-                IssuerSigningKey = _signingKey,
-                RequireSignedTokens = _validateSigningKey && _signingKey != null
-            };
+        if (!_validateSigningKey)
+        {
+            Logger.LogInformation("Signature validation is disabled. Any JWT will be accepted.");
+            validationParameters.SignatureValidator = (token, parameters) => new JwtSecurityToken(token);
+        }
 
-            if (!_validateSigningKey)
-            {
-                Logger.LogInformation("Signature validation is disabled. Any JWT will be accepted.");
-                validationParameters.SignatureValidator = (token, parameters) => new JwtSecurityToken(token);
-            }
-
-            if (_validateSigningKey && string.IsNullOrEmpty(_signingKey?.KeyId) && !string.IsNullOrEmpty(_jwksUri))
-            {
-                Logger.LogInformation("Fetching signing keys from JWKS URI: {JWKS}", _jwksUri);
-                try
-                {
-                    var keys = await GetSigningKeysFromJwksAsync(_jwksUri);
-                    if (keys.Count > 0)
-                    {
-                        Logger.LogInformation("Fetched {KeyCount} signing keys from JWKS.", keys.Count);
-                        validationParameters.IssuerSigningKeys = keys;
-                        validationParameters.ValidateIssuerSigningKey = true;
-                        validationParameters.RequireSignedTokens = true;
-                    }
-                    else
-                        Logger.LogWarning("No signing keys found at JWKS URI: {JWKS}", _jwksUri);
-                }
-                catch (Exception ex)
-                {
-                    Logger.LogError(ex, "Failed to fetch signing keys from JWKS URI: {JWKS}", _jwksUri);
-                    context.Response.StatusCode = 500;
-                    await context.Response.WriteAsync("Failed to fetch JWKS keys.");
-                    // Do not return; let pipeline continue to OpenTelemetryEnd
-                }
-            }
-
+        if (_validateSigningKey && string.IsNullOrEmpty(_signingKey?.KeyId) && !string.IsNullOrEmpty(_jwksUri))
+        {
+            Logger.LogInformation("Fetching signing keys from JWKS URI: {JWKS}", _jwksUri);
             try
             {
-                var principal = handler.ValidateToken(token, validationParameters, out var validatedToken);
-                Logger.LogInformation("JWT token validated successfully.");
-
-                var jwtToken = validatedToken as JwtSecurityToken;
-                if (jwtToken == null)
+                var keys = await GetSigningKeysFromJwksAsync(_jwksUri);
+                if (keys.Count > 0)
                 {
-                    Logger.LogWarning("Validated token is not a JwtSecurityToken.");
-                    context.Response.StatusCode = 401;
-                    await context.Response.WriteAsync("Invalid JWT token.");
-                    // Do not return; let pipeline continue to OpenTelemetryEnd
+                    Logger.LogInformation("Fetched {KeyCount} signing keys from JWKS.", keys.Count);
+                    validationParameters.IssuerSigningKeys = keys;
+                    validationParameters.ValidateIssuerSigningKey = true;
+                    validationParameters.RequireSignedTokens = true;
                 }
                 else
                 {
-                    // Validate audience with wildcard support
-                    if (!_validAudiences.MatchesWildcard(jwtToken.Audiences.FirstOrDefault() ?? "", _audienceWildcard) && _validAudiences.Count > 0)
-                    {
-                        Logger.LogWarning("JWT audience validation failed. Token audiences: {Audiences}", string.Join(",", jwtToken.Audiences));
-                        context.Response.StatusCode = 401;
-                        await context.Response.WriteAsync("Invalid audience.");
-                        // Do not return; let pipeline continue to OpenTelemetryEnd
-                    }
-                    else
-                    {
-                        // Add claims as headers
-                        context.Request.Headers["X-JWT-Subject"] = principal.FindFirstValue(ClaimTypes.NameIdentifier) ?? "";
-                        context.Request.Headers["X-JWT-Audience"] = string.Join(",", jwtToken.Audiences);
-                        context.Request.Headers["X-JWT-Issuer"] = jwtToken.Issuer;
-                        var email = principal.FindFirstValue(ClaimTypes.Email) ?? principal.FindFirst("email")?.Value ?? "";
-                        context.Request.Headers["X-JWT-Email"] = email;
-                        Logger.LogDebug("JWT claims added to headers: sub={Sub}, aud={Aud}, iss={Iss}, email={Email}", context.Request.Headers["X-JWT-Subject"], context.Request.Headers["X-JWT-Audience"], context.Request.Headers["X-JWT-Issuer"], email);
-
-                        // Wildcard email validation (using _validEmails)
-                        if (_validEmails.Count > 0)
-                        {
-                            if (!_validEmails.MatchesWildcard(email, "*"))
-                            {
-                                Logger.LogWarning("JWT email validation failed. Email: {Email}", email);
-                                context.Response.StatusCode = 401;
-                                await context.Response.WriteAsync("Invalid email.");
-                                // Do not return; let pipeline continue to OpenTelemetryEnd
-                            }
-                            else
-                                Logger.LogDebug("JWT email validation succeeded. Email: {Email}", email);
-                        }
-
-                        // Ensure user exists in DataContext
-                        var user = DataContext.Users.FirstOrDefault(u => u.Email == email);
-                        if (user == null)
-                        {
-                            if (Options.CreateUserIfNotFound)
-                            {
-                                Logger.LogInformation("User with email {Email} not found. Creating new user.", email);
-                                user = DataContext.CreateUser();
-                                user.Email = email;
-                                if (Options.DefaultPermissions != null && Options.DefaultPermissions.Count > 0)
-                                    user.Permissions.AddRange(Options.DefaultPermissions);
-                                await DataContext.SaveAsync(user);
-                            }
-                            else
-                            {
-                                Logger.LogWarning("User with email {Email} not found and CreateUserIfNotFound is false.", email);
-                                context.Response.StatusCode = 403;
-                                await context.Response.WriteAsync("User not found.");
-                                return;
-                            }
-                        }
-                        await next(context);
-                        return;
-                    }
+                    Logger.LogWarning("No signing keys found at JWKS URI: {JWKS}", _jwksUri);
                 }
-            }
-            catch (SecurityTokenException ex)
-            {
-                Logger.LogWarning(ex, "JWT validation failed: {Message}", ex.Message);
-                context.Response.StatusCode = 401;
-                await context.Response.WriteAsync("JWT validation failed: " + ex.Message);
-                // Do not return; let pipeline continue to OpenTelemetryEnd
             }
             catch (Exception ex)
             {
-                Logger.LogError(ex, "Unexpected error during JWT validation.");
-                context.Response.StatusCode = 500;
-                await context.Response.WriteAsync("Unexpected error during JWT validation.");
-                // Do not return; let pipeline continue to OpenTelemetryEnd
+                Logger.LogError(ex, "Failed to fetch signing keys from JWKS URI: {JWKS}", _jwksUri);
+                return Results
+                    .Problem(statusCode: 500, title: "Internal Server Error", detail: "Failed to fetch JWKS keys.")
+                    .Stop();
             }
         }
-        await next(context);
+
+        try
+        {
+            var principal = handler.ValidateToken(token, validationParameters, out var validatedToken);
+            Logger.LogInformation("JWT token validated successfully.");
+
+            var jwtToken = validatedToken as JwtSecurityToken;
+            if (jwtToken == null)
+            {
+                Logger.LogWarning("Validated token is not a JwtSecurityToken.");
+                return Results
+                    .Problem(statusCode: 401, title: "Unauthorized", detail: "Invalid JWT token.")
+                    .Stop();
+            }
+
+            // Validate audience with wildcard support
+            if (!_validAudiences.MatchesWildcard(jwtToken.Audiences.FirstOrDefault() ?? "", _audienceWildcard) && _validAudiences.Count > 0)
+            {
+                Logger.LogWarning("JWT audience validation failed. Token audiences: {Audiences}", string.Join(",", jwtToken.Audiences));
+                return Results
+                    .Problem(statusCode: 401, title: "Unauthorized", detail: "Invalid audience.")
+                    .Stop();
+            }
+
+            // Add claims as headers
+            context.Request.Headers["X-JWT-Subject"] = principal.FindFirstValue(ClaimTypes.NameIdentifier) ?? "";
+            context.Request.Headers["X-JWT-Audience"] = string.Join(",", jwtToken.Audiences);
+            context.Request.Headers["X-JWT-Issuer"] = jwtToken.Issuer;
+            var email = principal.FindFirstValue(ClaimTypes.Email) ?? principal.FindFirst("email")?.Value ?? "";
+            context.Request.Headers["X-JWT-Email"] = email;
+            Logger.LogDebug("JWT claims added to headers: sub={Sub}, aud={Aud}, iss={Iss}, email={Email}", 
+                context.Request.Headers["X-JWT-Subject"], context.Request.Headers["X-JWT-Audience"], 
+                context.Request.Headers["X-JWT-Issuer"], email);
+
+            // Wildcard email validation (using _validEmails)
+            if (_validEmails.Count > 0)
+            {
+                if (!_validEmails.MatchesWildcard(email, "*"))
+                {
+                    Logger.LogWarning("JWT email validation failed. Email: {Email}", email);
+                    return Results
+                        .Problem(statusCode: 401, title: "Unauthorized", detail: "Invalid email.")
+                        .Stop();
+                }
+                else
+                {
+                    Logger.LogDebug("JWT email validation succeeded. Email: {Email}", email);
+                }
+            }
+
+            // Ensure user exists in DataContext
+            var user = DataContext.Users.FirstOrDefault(u => u.Email == email);
+            if (user == null)
+            {
+                if (Options.CreateUserIfNotFound)
+                {
+                    Logger.LogInformation("User with email {Email} not found. Creating new user.", email);
+                    user = DataContext.CreateUser();
+                    user.Email = email;
+                    if (Options.DefaultPermissions != null && Options.DefaultPermissions.Count > 0)
+                        user.Permissions.AddRange(Options.DefaultPermissions);
+                    await DataContext.SaveAsync(user);
+                }
+                else
+                {
+                    Logger.LogWarning("User with email {Email} not found and CreateUserIfNotFound is false.", email);
+                    return Results
+                        .Problem(statusCode: 403, title: "Forbidden", detail: "User not found.")
+                        .Stop();
+                }
+            }
+
+            return Results
+                .Ok()
+                .Continue();
+        }
+        catch (SecurityTokenException ex)
+        {
+            Logger.LogWarning(ex, "JWT validation failed: {Message}", ex.Message);
+            return Results
+                .Problem(statusCode: 401, title: "Unauthorized", detail: $"JWT validation failed: {ex.Message}")
+                .Stop();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected error during JWT validation.");
+            return Results
+                .Problem(statusCode: 500, title: "Internal Server Error", detail: "Unexpected error during JWT validation.")
+                .Stop();
+        }
     }
 
     private async Task<IList<SecurityKey>> GetSigningKeysFromJwksAsync(string jwksUri)

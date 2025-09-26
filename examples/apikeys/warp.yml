@@ -1,0 +1,97 @@
+# Our Warp API Gateway configuration for the API Keys example.
+
+$include: datacontext.yml # Use an include to share configuration definitions between multiple files
+
+ReverseProxy:
+  Clusters:
+    # All our API clusters are defined here.
+
+    # Developer API cluster for managing API keys and user information.
+    developer_api_cluster:
+      Destinations:
+        developer:
+          Address: "http://127.0.0.1:5002/"
+
+    # Cluster that forwards requests to the MemoryAlpha RAG API service.
+    memoryalpha_cluster:
+      Destinations:
+        memoryalpha: # Only a single destination in this cluster.
+          # We can use an environment variable to configure the service address
+          Address: ${MEMORYALPHA_RAG_API_ADDR}
+
+  Routes:
+
+    developer:
+      ClusterId: "developer_api_cluster" # Route to the Developer API cluster.
+      Match:
+        Path: "/developer/{**remainder}" # All paths under /developer are routed to the Developer API.
+      Metadata:
+        Preprocess:
+          # JWT authentication for Developer API access
+          - Type: "Warp.Dilithium.Middleware.JwtValidator, warp.dilithium"
+            Options:
+              ValidAudiences: ["memoryalpha-dev"] # Expected audience in JWT
+              ValidIssuers: ["https://accounts.google.com"] # Google as JWT issuer
+              ValidateSigningKey: true # Validate JWT signature
+              JwksUri: "https://www.googleapis.com/oauth2/v3/certs" # Google's JWKS endpoint
+              DefaultPermissions: # Default permissions for new JWT users
+                - "developer"
+                - "user"
+          
+          # Check for "developer" permission (will be satisfied by JWT users due to default permissions)
+          - Type: "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium"
+            Options:
+              RequiredPermissions:
+                - "developer"
+              CreateUserIfNotFound: false # Don't create here, JWT middleware already did
+              
+        Predispatch: # Middleware to validate requests against the Developer API OpenAPI spec.
+          - Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
+            Options:
+              SpecFile: "spec/warp.apis.developer.yml"
+
+    memoryalpha:
+      ClusterId: "memoryalpha_cluster" # Route to the MemoryAlpha cluster.
+      Match:
+        Path: "/examples/apikeys/{**catch-all}" # Non-canonical API path so we can proxy the same service under different routes.
+      Transforms:
+        - PathRemovePrefix: "/examples" # Remove the /examples prefix before forwarding.
+        - PathRemovePrefix: "/apikeys" # Remove the /apikeys prefix before forwarding.
+      Metadata: # Middleware configuration for this route.
+        
+        # This section runs when the request first arrives and is matched to this route.
+        Preprocess:
+          # This middleware rate-limits requests to 1 per second for users.
+          - Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
+            Options:
+              RateLimitHz: 1.0
+
+          # OR middleware: Accept either JWT authentication OR API key authentication
+          - Type: "Warp.Dilithium.Middleware.OrMiddleware, warp.dilithium"
+            Options:
+              # Option 1: JWT authentication (same config as Developer API)
+              Middleware1:
+                Type: "Warp.Dilithium.Middleware.JwtValidator, warp.dilithium"
+                Options:
+                  ValidAudiences: ["memoryalpha-api"] # Different audience for API access
+                  ValidIssuers: ["https://accounts.google.com"]
+                  ValidateSigningKey: true
+                  JwksUri: "https://www.googleapis.com/oauth2/v3/certs"
+                  DefaultPermissions:
+                    - "user"
+                
+              # Option 2: API Key authentication (obtained from Developer API)
+              Middleware2:
+                Type: "Warp.Dilithium.Middleware.ApiKeyValidator, warp.dilithium"
+                Options:
+                  HeaderName: "X-Api-Key" # Custom header (default is "x-api-key")
+
+        Predispatch:
+          # This section runs after transforms have been applied but before the request is sent to the destination.
+          # Here, we will have the canonical path and headers.
+
+          # This middleware validates requests against the OpenAPI spec for this API.
+          - Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
+            Options:
+              # We can use a uri to load the spec from a remote location, or even from the API itself if it serves its own spec.
+              SpecUri: https://github.com/aniongithub/memoryalpha-rag-api/releases/download/${MEMORYALPHA_RAG_API_VERSION}/memoryalpha-rag-api-spec.json

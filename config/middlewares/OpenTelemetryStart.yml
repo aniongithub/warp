@@ -1,6 +1,0 @@
-OpenTelemetryStart:
-  Type: "Warp.Dilithium.Middleware.OpenTelemetryStart, warp.dilithium"
-  Options:
-    tagHeaders:
-      - "x-api-key"
-      - "x-request-id"

@@ -2,15 +2,12 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Warp.Core.Data;
-using Warp.Core.Helper;
+using System.Diagnostics;
 
 namespace Warp.Core.Middleware;
 
 public class MiddlewareOptions
 {
-    public bool TracingEnabled { get; set; } = false;
-    public string? TracingProvider { get; set; } = null;
-    public string TracingProviderName { get; set; } = "DefaultTracingProvider";
     public List<string> ApplyOn { get; set; } = new();
 }
 
@@ -28,8 +25,8 @@ public abstract class MiddlewareBase<TOptions> : IWarpMiddleware
 {
     protected TOptions Options { get; }
     protected ILogger Logger { get; }
-    protected TracingProvider _tracingProvider = default!;
     protected IDataContext DataContext { get; }
+    private static readonly ActivitySource ActivitySource = new("Warp");
 
     protected MiddlewareBase(string name, ILogger logger, IDataContext context, TOptions options)
     {
@@ -41,17 +38,6 @@ public abstract class MiddlewareBase<TOptions> : IWarpMiddleware
         // Lazy initialization: set default ApplyOn if not configured
         if (Options.ApplyOn.Count == 0)
             Options.ApplyOn.AddRange(["Sync", "AsyncSubmit", "AsyncStatus", "AsyncResult", "AsyncCancel"]);
-        
-        if (Options.TracingEnabled && Options.TracingProvider != null)
-        {
-            var providerType = Type.GetType(Options.TracingProvider!);
-            if (providerType == null)
-                throw new InvalidOperationException($"Tracing provider type '{Options.TracingProvider}' could not be found.");
-            _tracingProvider = (TracingProvider?)Activator.CreateInstance(providerType, Name)
-                ?? throw new InvalidOperationException($"Tracing provider '{Options.TracingProvider}' could not be instantiated.");
-            if (_tracingProvider == null)
-                throw new InvalidOperationException($"Tracing provider '{Options.TracingProvider}' not found.");
-        }
     }
 
     protected bool ShouldApplyToRequest(HttpContext context)
@@ -72,8 +58,9 @@ public abstract class MiddlewareBase<TOptions> : IWarpMiddleware
         var resultIndex = Array.FindIndex(segments, s => s.Equals("result", StringComparison.OrdinalIgnoreCase));
         var cancelIndex = Array.FindIndex(segments, s => s.Equals("cancel", StringComparison.OrdinalIgnoreCase));
 
-        // Check submit operation (should be last segment, POST method)
-        if (submitIndex != -1 && submitIndex == segments.Length - 1 && method.Equals("POST", StringComparison.OrdinalIgnoreCase))
+        // Check submit operation (should be last segment, POST or GET method)
+        if (submitIndex != -1 && submitIndex == segments.Length - 1 && 
+            (method.Equals("POST", StringComparison.OrdinalIgnoreCase) || method.Equals("GET", StringComparison.OrdinalIgnoreCase)))
         {
             return "AsyncSubmit";
         }
@@ -101,23 +88,48 @@ public abstract class MiddlewareBase<TOptions> : IWarpMiddleware
 
     public async Task InvokeWithTracingAsync(HttpContext context, RequestDelegate next)
     {
-        if (Options.TracingEnabled && _tracingProvider != null)
+        if (!ShouldApplyToRequest(context))
         {
-            var traceParent = context.Request.Headers["traceparent"].FirstOrDefault() ?? string.Empty;
-            using var span = _tracingProvider.Start(traceParent);
-            await InvokeAsync(context, next);
-            span.SetStatus(context.Response.StatusCode);
+            await next(context);
+            return;
         }
-        else
+
+        using var activity = ActivitySource.StartActivity($"Middleware.{Name}");
+        activity?.SetTag("middleware.name", Name);
+
+        IResult result = await ProcessAsync(context);
+        
+        // Always execute result (it will handle Stop/Continue internally)
+        await result.ExecuteAsync(context);
+        
+        // Only call next if the result indicates Continue
+        if (result is Result warpResult && warpResult.Action == PipelineAction.Continue)
         {
-            await InvokeAsync(context, next);
+            await next(context);
         }
+        
+        activity?.SetTag("response.status_code", context.Response.StatusCode);
     }
 
+    /// <summary>
+    /// Main processing method that middleware implementations should override.
+    /// Returns an IResult to control pipeline flow.
+    /// Use .Continue() or .Stop() extension methods for explicit pipeline control.
+    /// </summary>
+    /// <param name="context">The HTTP context</param>
+    /// <returns>IResult to execute and control pipeline flow</returns>
+    protected virtual Task<IResult> ProcessAsync(HttpContext context)
+    {
+        // Default implementation continues the pipeline
+        return Task.FromResult<IResult>(Results.Empty.Continue());
+    }
+
+    [Obsolete("Use ProcessAsync instead. This method will be removed in a future version.")]
     protected virtual Task InvokeAsync(HttpContext context, RequestDelegate next)
     {
-        // Default implementation just calls next
-        return next(context);
+        // Legacy support - calls ProcessAsync and handles result
+        var result = ProcessAsync(context).GetAwaiter().GetResult();
+        return result.ExecuteAsync(context);
     }
 
     public string Name { get; }

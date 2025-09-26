@@ -1,2 +1,0 @@
-OpenTelemetryEnd:
-  Type: "Warp.Dilithium.Middleware.OpenTelemetryEnd, warp.dilithium"

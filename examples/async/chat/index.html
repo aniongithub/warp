@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Memory Alpha Chat</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #1e3a8a 0%, #3730a3 100%);
+            min-height: 100vh;
+            color: white;
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 20px;
+            backdrop-filter: blur(10px);
+        }
+        h1 { text-align: center; margin-bottom: 30px; }
+        #messages {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+            background: rgba(0, 0, 0, 0.2);
+        }
+        .message {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 10px;
+        }
+        .user { background: rgba(59, 130, 246, 0.3); text-align: right; }
+        .assistant { background: rgba(16, 185, 129, 0.3); }
+        .thinking { background: rgba(251, 191, 36, 0.3); }
+        .input-area {
+            display: flex;
+            gap: 10px;
+        }
+        input {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        button {
+            padding: 10px 20px;
+            background: #3730a3;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover { background: #1e40af; }
+        button:disabled { background: #6b7280; cursor: not-allowed; }
+        .spinner {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖖 Memory Alpha Database</h1>
+        <div id="messages"></div>
+        <div class="input-area">
+            <input type="text" id="questionInput" placeholder="Ask me anything about Star Trek..." />
+            <button onclick="askQuestion()" id="askBtn">Ask</button>
+        </div>
+    </div>
+
+    <script>
+        // Create WebSocket connection using current host
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+        console.log('Connecting to WebSocket:', wsUrl);
+        
+        const ws = new WebSocket(wsUrl);
+        const messages = document.getElementById('messages');
+        const input = document.getElementById('questionInput');
+        const btn = document.getElementById('askBtn');
+
+        ws.onmessage = function(event) {
+            console.log('WebSocket message received:', event.data);
+            const data = JSON.parse(event.data);
+            // Remove any "thinking" messages (searching/loading messages)
+            const thinkingMessages = messages.querySelectorAll('.message.thinking');
+            thinkingMessages.forEach(msg => msg.remove());
+            
+            addMessage(data.answer, 'assistant');
+        };
+
+        ws.onopen = function() {
+            console.log('WebSocket connected');
+            addMessage('Connected to Memory Alpha! Ask me anything about Star Trek.', 'assistant');
+        };
+        
+        ws.onerror = function(error) {
+            console.error('WebSocket error:', error);
+            addMessage('Connection error. Please refresh the page.', 'assistant');
+        };
+        
+        ws.onclose = function() {
+            console.log('WebSocket closed');
+            addMessage('Connection lost. Please refresh the page.', 'assistant');
+        };
+
+        function addMessage(text, type) {
+            const div = document.createElement('div');
+            div.className = `message ${type}`;
+            div.innerHTML = text;
+            messages.appendChild(div);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        async function askQuestion() {
+            const question = input.value.trim();
+            if (!question) return;
+
+            addMessage(question, 'user');
+            addMessage('Searching Memory Alpha database... <span class="spinner"></span>', 'thinking');
+            
+            input.value = '';
+            btn.disabled = true;
+
+            try {
+                const response = await fetch('/ask', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({question: question})
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to submit question');
+                }
+            } catch (error) {
+                addMessage('Sorry, failed to submit question. Please try again.', 'assistant');
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        input.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') askQuestion();
+        });
+    </script>
+</body>
+</html>

@@ -23,6 +23,10 @@ public class Job : IJob
     // Complete input mapping configuration for HTTP request reconstruction
     public Dictionary<string, ParameterMapping> ParameterMappings { get; set; } = new();
 
+    // Distributed tracing context
+    public string? TraceParent { get; set; }
+    public string? TraceState { get; set; }
+
     // Actual API input/output data
     public string? Input { get; set; } = string.Empty;
     public string? Output { get; set; } = string.Empty;
@@ -56,4 +60,13 @@ public class TransformConfig
 {
     public string Type { get; set; } = string.Empty;
     public Dictionary<string, object?> Options { get; set; } = new();
+}
+
+/// <summary>
+/// Distributed tracing context for jobs
+/// </summary>
+public class TracingContext
+{
+    public string? TraceParent { get; set; }
+    public string? TraceState { get; set; }
 }

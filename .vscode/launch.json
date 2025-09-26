@@ -1,8 +1,8 @@
 {
     "version": "0.2.0",
-    "configurations": [
+    "configurations": [        
         {
-            "name": "Warp",
+            "name": "Warp (simple)",
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build-dotnet",
@@ -11,60 +11,154 @@
             "cwd": "${workspaceFolder}",
             "stopAtEntry": false,
             "env": {
-                "ASPNETCORE_ENVIRONMENT": "Development",
-                "ASPNETCORE_URLS": "http://0.0.0.0:5000",
-                "FIRESTORE_EMULATOR_HOST": "firestore:8080"
-            }
+                "MEMORYALPHA_RAG_API_ADDR": "http://memoryalpha-rag-api:8000",
+                "WARP_CONFIG_BASE_DIR": "./examples/simple" // This is all we need to configure
+                // The rest of the configuration is fully config driven via warp.yml
+            },
+            "presentation": {
+                "hidden": true
+            }   
         },
+
         {
-            "name": "DevApi",
+            "name": "DevApi (apikeys)",
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build-dotnet",
             "program": "${workspaceFolder}/warp.apis.developer/bin/Debug/net9.0/warp.apis.developer.dll",
-            "args": [],
-            "cwd": "${workspaceFolder}",
-            "stopAtEntry": false,
             "env": {
-                "ASPNETCORE_ENVIRONMENT": "Development",
-                "ASPNETCORE_URLS": "http://127.0.0.1:5002",
-                "FIRESTORE_EMULATOR_HOST": "firestore:8080"
+                "WARP_CONFIG_BASE_DIR": "./examples/apikeys"
+            },
+            "cwd": "${workspaceFolder}",
+            "presentation": {
+                "hidden": true
             }
         },
         {
-            "name": "AdminApi",
+            "name": "Warp (apikeys)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp/bin/Debug/net9.0/warp.dll",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "MEMORYALPHA_RAG_API_ADDR": "http://memoryalpha-rag-api:8000",
+                "WARP_CONFIG_BASE_DIR": "./examples/apikeys" // This is all we need to configure
+                // The rest of the configuration is fully config driven via warp.yml
+            },
+            "presentation": {
+                "hidden": true
+            }
+        },
+
+        {
+            "name": "DevApi (quotas)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp.apis.developer/bin/Debug/net9.0/warp.apis.developer.dll",
+            "justMyCode": false,
+            "env": {
+                "WARP_CONFIG_BASE_DIR": "./examples/quotas"
+            },
+            "cwd": "${workspaceFolder}",
+            "presentation": {
+                "hidden": true
+            }
+        },
+        {
+            "name": "AdminApi (quotas)",
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build-dotnet",
             "program": "${workspaceFolder}/warp.apis.admin/bin/Debug/net9.0/warp.apis.admin.dll",
-            "args": [],
-            "cwd": "${workspaceFolder}",
-            "stopAtEntry": false,
+            "justMyCode": false,
             "env": {
-                "ASPNETCORE_ENVIRONMENT": "Development",
-                "ASPNETCORE_URLS": "http://127.0.0.1:5003",
-                "FIRESTORE_EMULATOR_HOST": "firestore:8080"
+                "WARP_CONFIG_BASE_DIR": "./examples/quotas"
+            },
+            "cwd": "${workspaceFolder}",
+            "presentation": {
+                "hidden": true
+            }            
+        },
+        {
+            "name": "Warp (quotas)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp/bin/Debug/net9.0/warp.dll",
+            "justMyCode": false,
+            "env": {
+                "MEMORYALPHA_RAG_API_ADDR": "http://memoryalpha-rag-api:8000",
+                "WARP_CONFIG_BASE_DIR": "./examples/quotas" // This is all we need to configure
+                // The rest of the configuration is fully config driven via warp.yml
+            },
+            "presentation": {
+                "hidden": true
+            }
+        },
+
+        {
+            "name": "Warp (async)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp/bin/Debug/net9.0/warp.dll",
+            "justMyCode": false,
+            "env": {
+                "MEMORYALPHA_RAG_API_ADDR": "http://memoryalpha-rag-api:8000",
+                "WARP_CONFIG_BASE_DIR": "./examples/async", // This is all we need to configure
+                "REDIS_CONNECTION_STRING": "redis:6379"
+            },
+            "presentation": {
+                "hidden": true
             }
         },
         {
-            "name": "Plasma",
+            "name": "Warp.Plasma (async)",
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build-dotnet",
             "program": "${workspaceFolder}/warp.plasma/bin/Debug/net9.0/warp.plasma.dll",
-            "args": [],
-            "cwd": "${workspaceFolder}",
-            "stopAtEntry": false,
             "env": {
-                "ASPNETCORE_ENVIRONMENT": "Development",
-                "FIRESTORE_EMULATOR_HOST": "firestore:8080"
+                "WARP_CONFIG_BASE_DIR": "./examples/async" // This is all we need to configure
+            },
+            "presentation": {
+                "hidden": true
+            }
+        },
+        {
+            "name": "Memory Alpha Chat",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/examples/async/chat/main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/examples/async/chat",
+            "presentation": {
+                "hidden": true
             }
         }
     ],
     "compounds": [
         {
-            "name": "Warp API Gateway",
-            "configurations": ["Warp", "DevApi", "AdminApi", "Plasma"]
+            "name": "Warp Simple",
+            "configurations": ["Warp (simple)"],
+            "stopAll": true
+        },
+        {
+            "name": "Warp JWT & ApiKeys",
+            "configurations": ["Warp (apikeys)", "DevApi (apikeys)"],
+            "stopAll": true
+        },
+        {
+            "name": "Warp Permissions & Quotas",
+            "configurations": ["Warp (quotas)", "DevApi (quotas)", "AdminApi (quotas)"],
+            "stopAll": true
+        },
+        {
+            "name": "Warp Async API",
+            "configurations": ["Warp (async)", "Warp.Plasma (async)", "Memory Alpha Chat"],
+            "stopAll": true
         }
     ]
 }

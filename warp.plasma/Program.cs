@@ -2,11 +2,14 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Warp.Core.Helper;
 using Warp.Core.Job;
-using Warp.Core.Job.Contexts;
+using Warp.Core.Job.Delivery;
 using Warp.Dilithium.Transforms;
 
 namespace Warp.Plasma;
@@ -22,18 +25,40 @@ class Program
             var builder = Host.CreateDefaultBuilder(args)
                 .ConfigureAppConfiguration((context, config) =>
                 {
-                    // Clear default configuration sources and use warp configuration system
-                    config.Sources.Clear();
-                    
                     // Use the warp configuration system with includes and environment interpolation
-                    config.AddWarpConfiguration("warp.plasma", "./config", useDevelopmentConfig: true, clearExistingSources: false)
-                          .AddEnvironmentVariables("WARP_PLASMA_")
-                          .AddCommandLine(args);
+                    config.AddWarpConfiguration("warp.plasma",
+                        baseDirectory: Environment.GetEnvironmentVariable("WARP_CONFIG_BASE_DIR") ?? "./config");
                 })
                 .ConfigureServices((context, services) =>
                 {
-                    services.AddSingleton<EPS>();
                     services.AddHttpClient();
+                    
+                    // Configure OpenTelemetry for distributed tracing
+                    var config = context.Configuration;
+                    var otelSection = config.GetSection("OpenTelemetry");
+                    var sourceNames = otelSection.GetSection("SourceNames").Get<string[]>() ?? new[] { "Warp" };
+                    var otelEndpoint = otelSection.GetValue<string>("Endpoint") ?? "http://localhost:4317";
+                    var serviceName = otelSection.GetValue<string>("ServiceName") ?? "Warp";
+
+                    services.AddOpenTelemetry().WithTracing(tracer =>
+                    {
+                        tracer
+                            .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(serviceName))
+                            .AddSource(sourceNames)
+                            .AddConsoleExporter() // For hierarchical console logging
+                            .AddOtlpExporter(otlp => otlp.Endpoint = new Uri(otelEndpoint)) // For Jaeger/external tools
+                            .AddHttpClientInstrumentation();
+                    });
+                    
+                    // Register EPS with the configured source name
+                    services.AddSingleton<EPS>(serviceProvider =>
+                    {
+                        var logger = serviceProvider.GetRequiredService<ILogger<EPS>>();
+                        var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+                        var httpClient = serviceProvider.GetRequiredService<HttpClient>();
+                        var sourceName = sourceNames.Length > 0 ? sourceNames[0] : "Warp";
+                        return new EPS(logger, configuration, httpClient, serviceProvider, sourceName);
+                    });
                 })
                 .ConfigureLogging(logging =>
                 {
@@ -42,7 +67,18 @@ class Program
                 });
 
             var host = builder.Build();
-            
+
+            // Ensure TracerProvider is initialized so ActivitySource listeners are registered
+            try
+            {
+                var tracerProvider = host.Services.GetRequiredService<TracerProvider>();
+                tracerProvider.ForceFlush(1000);
+            }
+            catch
+            {
+                // best-effort: failure to flush shouldn't stop startup
+            }
+
             var engine = host.Services.GetRequiredService<EPS>();
             var logger = host.Services.GetRequiredService<ILogger<Program>>();
             
@@ -71,102 +107,65 @@ internal sealed class EPS
     private readonly ILogger<EPS> _logger;
     private readonly IConfiguration _configuration;
     private readonly HttpClient _httpClient;
-    private RedisJobContext? _jobContext;
-    private readonly SemaphoreSlim _concurrencyLimiter;
-    private DateTime _lastJobProcessedAt = DateTime.UtcNow;
+    private readonly IServiceProvider _serviceProvider;
+    private List<JobConfiguration> _jobConfigurations = new();
+    private readonly CancellationTokenSource _cancellationTokenSource = new();
+    private readonly ActivitySource _activitySource;
 
-    public EPS(ILogger<EPS> logger, IConfiguration configuration, HttpClient httpClient)
+    public EPS(ILogger<EPS> logger, IConfiguration configuration, HttpClient httpClient, IServiceProvider serviceProvider, string sourceName)
     {
         _logger = logger;
         _configuration = configuration;
         _httpClient = httpClient;
+        _serviceProvider = serviceProvider;
         
-        var maxConcurrentJobs = int.Parse(_configuration["MaxConcurrentJobs"] ?? "5");
-        _concurrencyLimiter = new SemaphoreSlim(maxConcurrentJobs, maxConcurrentJobs);
+        // Create ActivitySource after TracerProvider is initialized
+        _activitySource = new ActivitySource(sourceName);
     }
 
     public async Task InitializeAsync()
     {
-        _logger.LogInformation("🔥 Plasma flow initialized - ready to process jobs");
+        _logger.LogInformation("🔥 Plasma flow initialized - loading job configurations...");
         
-        // Initialize Redis job context from configuration
-        var redisConfig = _configuration.GetSection("Redis");
-        var connectionString = redisConfig["ConnectionString"] ?? "localhost:6379";
-        var database = int.Parse(redisConfig["Database"] ?? "0");
-        var channel = redisConfig["Channel"] ?? "default";
+        // Load job configurations from config
+        _jobConfigurations = LoadJobConfigurations();
         
-        _logger.LogInformation("Connecting to Redis: {ConnectionString}, Database: {Database}, Channel: {Channel}", 
-            connectionString, database, channel);
-        
-        _jobContext = new RedisJobContext(channel, connectionString, database);
-        
-        // Log configuration for debugging
-        var pollingInterval = _configuration["PollingIntervalMs"];
-        var maxConcurrentJobs = _configuration["MaxConcurrentJobs"];
-        var idleTimeout = _configuration["IdleTimeoutMs"];
-        var httpTimeout = _configuration["HttpTimeoutMs"];
-        var endpoint = _configuration["Endpoint"] ?? "http://localhost:8000";
-        
-        var idleTimeoutDisplay = idleTimeout == "-1" ? "infinite" : $"{idleTimeout}ms";
-        var httpTimeoutDisplay = httpTimeout == "-1" ? "infinite" : $"{httpTimeout}ms";
-        
-        _logger.LogInformation("Configuration - Polling: {PollingInterval}ms, MaxConcurrent: {MaxConcurrent}, IdleTimeout: {IdleTimeout}, HttpTimeout: {HttpTimeout}, Endpoint: {Endpoint}", 
-            pollingInterval, maxConcurrentJobs, idleTimeoutDisplay, httpTimeoutDisplay, endpoint);
+        _logger.LogInformation("Loaded {JobConfigCount} job configurations", _jobConfigurations.Count);
+        foreach (var config in _jobConfigurations)
+        {
+            _logger.LogInformation("Job Configuration: {JobName} - Context: {ContextType}, Delivery: {DeliveryType}", 
+                config.Name, config.ContextType, config.DeliveryType ?? "None");
+        }
         
         await Task.CompletedTask;
     }
 
     public async Task Start()
     {
-        _logger.LogInformation("🟢 Starting job processing loop...");
-        
-        var pollingIntervalMs = int.Parse(_configuration["PollingIntervalMs"] ?? "5000");
-        var idleTimeoutMs = int.Parse(_configuration["IdleTimeoutMs"] ?? "300000");
-        var cancellationToken = new CancellationTokenSource();
+        _logger.LogInformation("🟢 Starting multi-consumer job processing...");
         
         Console.WriteLine("✅ Engine ready. Press Ctrl+C to stop.");
         Console.CancelKeyPress += (sender, e) => {
             e.Cancel = true;
             _logger.LogInformation("🛑 Shutdown requested...");
-            cancellationToken.Cancel();
+            _cancellationTokenSource.Cancel();
         };
         
         try
         {
-            while (!cancellationToken.Token.IsCancellationRequested)
+            // Start a consumer task for each job configuration
+            var consumerTasks = new List<Task>();
+            
+            foreach (var jobConfig in _jobConfigurations)
             {
-                var jobsProcessed = await ProcessJobsAsync();
+                var consumerTask = Task.Run(() => ConsumeJobs(jobConfig, _cancellationTokenSource.Token));
+                consumerTasks.Add(consumerTask);
                 
-                if (jobsProcessed > 0)
-                {
-                    _lastJobProcessedAt = DateTime.UtcNow;
-                    _logger.LogDebug("Reset idle timer after processing {JobCount} jobs", jobsProcessed);
-                }
-                else
-                {
-                    // Check for idle timeout (-1 means infinite)
-                    if (idleTimeoutMs != -1)
-                    {
-                        var idleDuration = DateTime.UtcNow - _lastJobProcessedAt;
-                        if (idleDuration.TotalMilliseconds > idleTimeoutMs)
-                        {
-                            _logger.LogInformation("💤 Idle timeout reached ({IdleMs}ms), shutting down...", idleTimeoutMs);
-                            break;
-                        }
-                        else
-                        {
-                            _logger.LogDebug("Idle for {IdleMs}ms (timeout: {TimeoutMs}ms)", 
-                                (int)idleDuration.TotalMilliseconds, idleTimeoutMs);
-                        }
-                    }
-                    else
-                    {
-                        _logger.LogDebug("Idle mode with infinite timeout, waiting for jobs...");
-                    }
-                }
-                
-                await Task.Delay(pollingIntervalMs, cancellationToken.Token);
+                _logger.LogInformation("Started consumer for job type: {JobName}", jobConfig.Name);
             }
+            
+            // Wait for all consumers to complete
+            await Task.WhenAll(consumerTasks);
         }
         catch (OperationCanceledException)
         {
@@ -174,154 +173,324 @@ internal sealed class EPS
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "💥 Fatal error in job processing loop");
+            _logger.LogError(ex, "💥 Fatal error in job processing");
             throw;
-        }
-        finally
-        {
-            _concurrencyLimiter?.Dispose();
         }
     }
 
-    public async Task<int> ProcessJobsAsync()
+    private List<JobConfiguration> LoadJobConfigurations()
     {
-        _logger.LogDebug("⚡ Processing jobs...");
+        var jobConfigs = new List<JobConfiguration>();
+        var jobsSection = _configuration.GetSection("Jobs");
         
-        var jobsProcessed = 0;
-        var maxConcurrentJobs = int.Parse(_configuration["MaxConcurrentJobs"] ?? "5");
-        
-        if (_jobContext != null)
+        foreach (var jobSection in jobsSection.GetChildren())
         {
-            // Process jobs one by one, but allow multiple to run concurrently
-            var tasks = new List<Task<int>>();
+            var config = new JobConfiguration
+            {
+                Name = jobSection.Key,
+                Endpoint = jobSection["Endpoint"] ?? "",
+                MaxConcurrentJobs = int.Parse(jobSection["MaxConcurrentJobs"] ?? "1"),
+                PollingIntervalMs = int.Parse(jobSection["PollingIntervalMs"] ?? "5000")
+            };
             
-            // Only try to dequeue as many jobs as we have available slots
-            var availableSlots = _concurrencyLimiter.CurrentCount;
-            var jobsToTry = Math.Min(maxConcurrentJobs, availableSlots);
+            // Load context and delivery types directly
+            var contextSection = jobSection.GetSection("Context");
+            config.ContextType = contextSection["Type"] ?? "";
             
-            _logger.LogDebug("Available concurrency slots: {Available}/{Max}, will try to dequeue {JobsToTry} jobs", 
-                availableSlots, maxConcurrentJobs, jobsToTry);
+            var deliverySection = jobSection.GetSection("Delivery");
+            if (deliverySection.Exists())
+            {
+                config.DeliveryType = deliverySection["Type"] ?? "";
+            }
             
-            // Try to dequeue jobs sequentially, but process them concurrently
-            for (int i = 0; i < jobsToTry; i++)
+            jobConfigs.Add(config);
+        }
+        
+        return jobConfigs;
+    }
+
+    private async Task ConsumeJobs(JobConfiguration jobConfig, CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("Starting consumer for job type: {JobName}", jobConfig.Name);
+        
+        // Create job context instance
+        var jobContext = CreateJobContext(jobConfig.ContextType, jobConfig.Name);
+        
+        // Create result delivery instance (optional)
+        IJobResultDelivery? resultDelivery = null;
+        if (!string.IsNullOrEmpty(jobConfig.DeliveryType))
+        {
+            resultDelivery = CreateResultDelivery(jobConfig.DeliveryType, jobConfig.Name);
+        }
+        
+        // Create concurrency limiter for this job type
+        using var concurrencyLimiter = new SemaphoreSlim(jobConfig.MaxConcurrentJobs, jobConfig.MaxConcurrentJobs);
+        
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
             {
                 try
                 {
-                    // Try to dequeue a job first
-                    var job = await _jobContext.DequeueJobAsync<Job>();
+                    // Try to dequeue a job (this will return a result indicating success or no job)
+                    var dequeueResult = await jobContext.DequeueJobAsync<Job>();
                     
-                    // If we got a job, acquire a slot and start processing
-                    if (await _concurrencyLimiter.WaitAsync(0)) // Non-blocking check
+                    if (dequeueResult.HasJob)
                     {
-                        var task = ProcessSingleJobAsync(job);
-                        tasks.Add(task);
-                        _logger.LogDebug("Started processing job {JobId} (slot {SlotIndex}, remaining slots: {Remaining})", 
-                            job.Id, i + 1, _concurrencyLimiter.CurrentCount);
+                        var job = dequeueResult.Job!;
+                        
+                        // Acquire concurrency slot
+                        await concurrencyLimiter.WaitAsync(cancellationToken);
+                        
+                        // Process job in background task to allow concurrent processing
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await ProcessSingleJobAsync(job, jobContext, resultDelivery, jobConfig);
+                            }
+                            finally
+                            {
+                                concurrencyLimiter.Release();
+                            }
+                        }, cancellationToken);
                     }
                     else
                     {
-                        // No slots available, put the job back (this shouldn't happen with our logic)
-                        _logger.LogWarning("No concurrency slot available for job {JobId}, this shouldn't happen", job.Id);
-                        break;
+                        // No jobs available, wait and try again
+                        await Task.Delay(jobConfig.PollingIntervalMs, cancellationToken);
                     }
                 }
                 catch (InvalidOperationException)
                 {
-                    // No more jobs available
-                    _logger.LogDebug("No more jobs available in queue after dequeuing {JobCount} jobs", tasks.Count);
+                    // Keep this for actual errors (not normal "no job" case)
+                    _logger.LogWarning("Error occurred while dequeuing job for {JobName}", jobConfig.Name);
+                    await Task.Delay(jobConfig.PollingIntervalMs, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
                     break;
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error dequeuing job");
-                    break;
-                }
-            }
-            
-            if (tasks.Any())
-            {
-                var results = await Task.WhenAll(tasks);
-                jobsProcessed = results.Sum();
-                
-                if (jobsProcessed > 0)
-                {
-                    _logger.LogInformation("⚡ Processed {JobCount} jobs concurrently", jobsProcessed);
+                    _logger.LogError(ex, "Error in consumer loop for job type: {JobName}", jobConfig.Name);
+                    await Task.Delay(jobConfig.PollingIntervalMs, cancellationToken);
                 }
             }
         }
-        
-        return jobsProcessed;
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Consumer for job type {JobName} stopped", jobConfig.Name);
+        }
     }
 
-    private async Task<int> ProcessSingleJobAsync(Job job)
+    private IJobContext CreateJobContext(string contextType, string jobName)
     {
+        var type = Type.GetType(contextType);
+        if (type == null)
+        {
+            throw new InvalidOperationException($"Could not load job context type: {contextType}");
+        }
+
         try
         {
-            _logger.LogInformation("Processing job: {JobId}", job.Id);
-            
-            // Access routing info directly from job fields
-            if (job != null)
-            {
-                try
-                {
-                    // Get the configured endpoint
-                    var targetEndpoint = _configuration["Endpoint"] ?? "http://localhost:8000";
-                    _logger.LogDebug("Using configured endpoint: {Endpoint}", targetEndpoint);
+            // Get the configuration section for this job's context options
+            var contextOptionsSection = _configuration.GetSection($"Jobs:{jobName}:Context:Options");
 
-                    var syncPath = job.OriginalPath;
-                    // Build the full sync URL
-                    var syncUrl = $"{targetEndpoint.TrimEnd('/')}{syncPath}";
-                    
-                    _logger.LogInformation("Routing job to sync API: {SyncUrl}", syncUrl);
-                    _logger.LogDebug("Job parameters: {Parameters}", JsonSerializer.Serialize(job.Parameters));
-                    
-                    // Reverse transforms to reconstruct original request
-                    var originalParameters = await ReverseTransformsAsync(job);
-                    _logger.LogDebug("Parameters after reverse transform: {Parameters}", JsonSerializer.Serialize(originalParameters));
-                    
-                    // Execute the job by dispatching to sync API
-                    await ExecuteJobAsync(job, syncUrl, originalParameters);
-                    return 1; // Job was processed
-                }
-                catch (Exception ex)
+            // Use reflection to determine constructor parameters
+            var constructor = type.GetConstructors().FirstOrDefault();
+            if (constructor == null)
+            {
+                throw new InvalidOperationException($"No constructor found for job context type: {contextType}");
+            }
+
+            var parameters = constructor.GetParameters();
+            var args = new object[parameters.Length];
+
+            for (int i = 0; i < parameters.Length; i++)
+            {
+                var param = parameters[i];
+                var paramName = param.Name;
+
+                if (paramName != null)
                 {
-                    _logger.LogError(ex, "Error executing job {JobId}", job.Id);
-                    if (_jobContext != null)
-                        await _jobContext.UpdateJobAsync(job, JobStatus.Failed, error: $"Job execution error: {ex.Message}");
-                    return 1; // Job was processed (failed)
+                    var configValue = contextOptionsSection[paramName];
+                    if (configValue != null)
+                    {
+                        // Convert the value to the expected parameter type
+                        args[i] = param.ParameterType == typeof(int) 
+                            ? Convert.ToInt32(configValue) 
+                            : configValue.ToString() ?? "";
+                    }
+                    else
+                    {
+                        // Provide default values for common parameter names
+                        args[i] = paramName switch
+                        {
+                            "channel" => contextOptionsSection["Channel"] ?? "default",
+                            "connectionString" => contextOptionsSection["ConnectionString"] ?? "localhost:6379",
+                            "database" or "dbIndex" => Convert.ToInt32(contextOptionsSection["Database"] ?? "0"),
+                            _ => param.HasDefaultValue ? param.DefaultValue! : 
+                                 param.ParameterType.IsValueType ? Activator.CreateInstance(param.ParameterType)! : 
+                                 throw new InvalidOperationException($"Cannot resolve parameter {paramName} for job context {contextType}")
+                        };
+                    }
                 }
-                finally
+                else
                 {
-                    // Only release if we actually processed a job
-                    _concurrencyLimiter.Release();
-                    _logger.LogDebug("Released concurrency slot after processing job (available: {Available})", _concurrencyLimiter.CurrentCount);
+                    // No options provided, use defaults
+                    args[i] = param.HasDefaultValue ? param.DefaultValue! : 
+                             param.ParameterType.IsValueType ? Activator.CreateInstance(param.ParameterType)! : 
+                             throw new InvalidOperationException($"Cannot resolve parameter {paramName} for job context {contextType}");
                 }
             }
-            
-            return job != null ? 1 : 0;
-        }
-        catch (InvalidOperationException)
-        {
-            // No jobs available - this is normal, release the slot since we didn't use it
-            _concurrencyLimiter.Release();
-            _logger.LogDebug("No jobs available in queue, released unused concurrency slot (available: {Available})", _concurrencyLimiter.CurrentCount);
-            return 0;
+
+            var instance = Activator.CreateInstance(type, args);
+            return (IJobContext)(instance ?? throw new InvalidOperationException($"Failed to create instance of {contextType}"));
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing job");
-            // Release the slot since we encountered an error
-            _concurrencyLimiter.Release();
-            _logger.LogDebug("Released concurrency slot after error (available: {Available})", _concurrencyLimiter.CurrentCount);
-            return 0;
+            throw new InvalidOperationException($"Failed to create job context instance for type: {contextType}", ex);
         }
     }
 
-    private async Task ExecuteJobAsync(Job job, string syncUrl, Dictionary<string, object?> originalParameters)
+    private IJobResultDelivery? CreateResultDelivery(string deliveryType, string jobName)
     {
+        var type = Type.GetType(deliveryType);
+        if (type == null)
+        {
+            _logger.LogWarning("Could not load result delivery type: {DeliveryType}", deliveryType);
+            return null;
+        }
+
         try
         {
-            _logger.LogInformation("🚀 Executing job {JobId} at {SyncUrl}", job.Id, syncUrl);
+            _logger.LogDebug("Creating result delivery instance: {DeliveryType}", deliveryType);
+
+            // Use the base class pattern to find options type
+            var deliveryBaseType = type.GetResultDeliveryBaseType();
+            if (deliveryBaseType == null)
+            {
+                _logger.LogWarning("Result delivery type {DeliveryType} does not inherit from ResultDeliveryBase<>", deliveryType);
+                return null;
+            }
+
+            var optionsType = deliveryBaseType.GetGenericArguments()[0];
+            var deliveryName = $"delivery-{deliveryType}";
+
+            // Create options instance and bind configuration directly like middleware
+            var optionsInstance = Activator.CreateInstance(optionsType);
+            if (optionsInstance == null)
+            {
+                _logger.LogWarning("Could not create options instance for result delivery: {DeliveryType}", deliveryType);
+                return null;
+            }
+
+            // Get the configuration section for this job's delivery options
+            var deliveryOptionsSection = _configuration.GetSection($"Jobs:{jobName}:Delivery:Options");
+            if (deliveryOptionsSection.Exists())
+            {
+                _logger.LogDebug("Binding options for result delivery: {DeliveryType}", deliveryType);
+                deliveryOptionsSection.Bind(optionsInstance);
+            }
+
+            _logger.LogDebug("Creating delivery instance using ActivatorUtilities with base class pattern");
+            
+            // Use the warp pattern with ActivatorUtilities - base class constructor signature
+            var logger = _serviceProvider.GetRequiredService<ILoggerFactory>().CreateLogger(type);
+            var delivery = ActivatorUtilities.CreateInstance(_serviceProvider, type, deliveryName, logger, optionsInstance);
+            
+            return delivery as IJobResultDelivery;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to create result delivery instance for type: {DeliveryType}", deliveryType);
+            return null;
+        }
+    }
+
+    private async Task ProcessSingleJobAsync(Job job, IJobContext jobContext, IJobResultDelivery? resultDelivery, JobConfiguration jobConfig)
+    {
+        // Create a new activity as a child of the original request's trace
+        using var activity = CreateChildActivity(job, $"Job.Process.{jobConfig.Name}");
+        activity?.SetTag("job.id", job.Id);
+        activity?.SetTag("job.type", jobConfig.Name);
+        activity?.SetTag("job.status", job.Status.ToString());
+        activity?.SetTag("job.user_id", job.User?.Id ?? "unknown");
+        
+        try
+        {
+            _logger.LogInformation("Processing job: {JobId} (type: {JobType}) with trace: {TraceId}", 
+                job.Id, jobConfig.Name, activity?.TraceId.ToString() ?? "none");
+            
+            // Get the endpoint from job configuration
+            var targetEndpoint = jobConfig.Endpoint;
+            if (string.IsNullOrEmpty(targetEndpoint))
+            {
+                // Fallback to global configuration
+                targetEndpoint = _configuration["Endpoint"] ?? "http://localhost:8000";
+            }
+            _logger.LogDebug("Using configured endpoint: {Endpoint}", targetEndpoint);
+
+            var syncPath = job.OriginalPath;
+            // Build the full sync URL
+            var syncUrl = $"{targetEndpoint.TrimEnd('/')}{syncPath}";
+            
+            _logger.LogInformation("Routing job to sync API: {SyncUrl}", syncUrl);
+            _logger.LogDebug("Job parameters: {Parameters}", JsonSerializer.Serialize(job.Parameters));
+            
+            // Reverse transforms to reconstruct original request
+            var originalParameters = await ReverseTransformsAsync(job);
+            _logger.LogDebug("Parameters after reverse transform: {Parameters}", JsonSerializer.Serialize(originalParameters));
+            
+            // Execute the job by dispatching to sync API
+            await ExecuteJobAsync(job, jobContext, syncUrl, originalParameters);
+            
+            // Deliver result if configured
+            if (resultDelivery != null && (job.Status == JobStatus.Completed || job.Status == JobStatus.Failed))
+            {
+                try
+                {
+                    await resultDelivery.DeliverAsync(job);
+                    _logger.LogInformation("Result delivered for job {JobId} via {DeliveryType}", 
+                        job.Id, resultDelivery.GetType().Name);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to deliver result for job {JobId}", job.Id);
+                    // Don't fail the job just because delivery failed
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, $"Job execution error: {ex.Message}");
+            activity?.SetTag("exception.type", ex.GetType().Name);
+            activity?.SetTag("exception.message", ex.Message);
+            _logger.LogError(ex, "Error executing job {JobId}", job.Id);
+            
+            try
+            {
+                await jobContext.UpdateJobAsync(job, JobStatus.Failed, error: $"Job execution error: {ex.Message}");
+            }
+            catch (Exception updateEx)
+            {
+                _logger.LogError(updateEx, "Failed to update job {JobId} status to failed", job.Id);
+            }
+        }
+    }
+
+    private async Task ExecuteJobAsync(Job job, IJobContext jobContext, string syncUrl, Dictionary<string, object?> originalParameters)
+    {
+        using var activity = _activitySource.StartActivity("Job.Execute.HttpCall");
+        activity?.SetTag("job.id", job.Id);
+        activity?.SetTag("http.url", syncUrl);
+        activity?.SetTag("http.method", job.Parameters.ContainsKey("_httpMethod") ? job.Parameters["_httpMethod"]?.ToString() : "POST");
+        
+        try
+        {
+            _logger.LogInformation("🚀 Executing job {JobId} at {SyncUrl} with trace: {TraceId}", 
+                job.Id, syncUrl, activity?.TraceId.ToString() ?? "none");
             
             // Prepare the HTTP request
             using var request = new HttpRequestMessage();
@@ -332,7 +501,29 @@ internal sealed class EPS
                 : HttpMethod.Post;
             
             request.Method = httpMethod;
-            request.RequestUri = new Uri(syncUrl);
+            
+            // For GET requests, add parameters as query string
+            if (httpMethod == HttpMethod.Get && originalParameters.Any())
+            {
+                var queryBuilder = new StringBuilder(syncUrl);
+                queryBuilder.Append(syncUrl.Contains('?') ? '&' : '?');
+                
+                var queryParams = new List<string>();
+                foreach (var (key, value) in originalParameters)
+                {
+                    if (key != "_httpMethod" && value != null) // Skip internal parameters
+                    {
+                        var valueString = value.ToString() ?? "";
+                        queryParams.Add($"{Uri.EscapeDataString(key)}={Uri.EscapeDataString(valueString)}");
+                    }
+                }
+                queryBuilder.Append(string.Join("&", queryParams));
+                request.RequestUri = new Uri(queryBuilder.ToString());
+            }
+            else
+            {
+                request.RequestUri = new Uri(syncUrl);
+            }
             
             // Add headers from job
             foreach (var header in job.Headers)
@@ -341,6 +532,25 @@ internal sealed class EPS
                 {
                     // If it's a content header, we'll add it to content headers later
                     _logger.LogDebug("Header {HeaderName} will be added to content headers", header.Key);
+                }
+            }
+            
+            // Add current activity's tracing context to propagate distributed trace
+            if (Activity.Current != null)
+            {
+                var currentTraceParent = Activity.Current.Id;
+                var currentTraceState = Activity.Current.TraceStateString;
+                
+                if (!string.IsNullOrEmpty(currentTraceParent))
+                {
+                    request.Headers.TryAddWithoutValidation("traceparent", currentTraceParent);
+                    _logger.LogDebug("Added traceparent header: {TraceParent}", currentTraceParent);
+                }
+                
+                if (!string.IsNullOrEmpty(currentTraceState))
+                {
+                    request.Headers.TryAddWithoutValidation("tracestate", currentTraceState);
+                    _logger.LogDebug("Added tracestate header: {TraceState}", currentTraceState);
                 }
             }
             
@@ -398,7 +608,6 @@ internal sealed class EPS
             using var cts = timeoutMs == -1 
                 ? new CancellationTokenSource() 
                 : new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMs));
-            _httpClient.Timeout = Timeout.InfiniteTimeSpan; // Disable HttpClient timeout, we use our own
             
             // Execute the HTTP request
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -412,16 +621,22 @@ internal sealed class EPS
                 _logger.LogInformation("✅ Job {JobId} completed in {ElapsedMs}ms with status {StatusCode}", 
                     job.Id, stopwatch.ElapsedMilliseconds, (int)response.StatusCode);
                 
+                // Add response information to activity
+                activity?.SetTag("http.status_code", (int)response.StatusCode);
+                activity?.SetTag("http.response_time_ms", stopwatch.ElapsedMilliseconds);
+                activity?.SetStatus(response.IsSuccessStatusCode ? ActivityStatusCode.Ok : ActivityStatusCode.Error, 
+                    response.IsSuccessStatusCode ? "Success" : $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
+                
                 // Update job status based on response
                 if (response.IsSuccessStatusCode)
                 {
-                    await _jobContext!.UpdateJobAsync(job, JobStatus.Completed, output: responseContent);
+                    await jobContext.UpdateJobAsync(job, JobStatus.Completed, output: responseContent);
                     _logger.LogInformation("Job {JobId} marked as completed", job.Id);
                 }
                 else
                 {
                     var errorMessage = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {responseContent}";
-                    await _jobContext!.UpdateJobAsync(job, JobStatus.Failed, error: errorMessage);
+                    await jobContext.UpdateJobAsync(job, JobStatus.Failed, error: errorMessage);
                     _logger.LogWarning("Job {JobId} marked as failed: {Error}", job.Id, errorMessage);
                 }
             }
@@ -429,13 +644,17 @@ internal sealed class EPS
         catch (OperationCanceledException) when (_httpClient != null)
         {
             var timeoutError = "Request timeout";
-            await _jobContext!.UpdateJobAsync(job, JobStatus.Failed, error: timeoutError);
+            activity?.SetStatus(ActivityStatusCode.Error, timeoutError);
+            await jobContext.UpdateJobAsync(job, JobStatus.Failed, error: timeoutError);
             _logger.LogWarning("Job {JobId} timed out and marked as failed", job.Id);
         }
         catch (Exception ex)
         {
             var errorMessage = $"Exception during job execution: {ex.Message}";
-            await _jobContext!.UpdateJobAsync(job, JobStatus.Failed, error: errorMessage);
+            activity?.SetStatus(ActivityStatusCode.Error, errorMessage);
+            activity?.SetTag("exception.type", ex.GetType().Name);
+            activity?.SetTag("exception.message", ex.Message);
+            await jobContext.UpdateJobAsync(job, JobStatus.Failed, error: errorMessage);
             _logger.LogError(ex, "Job {JobId} failed with exception", job.Id);
         }
     }
@@ -511,5 +730,43 @@ internal sealed class EPS
             // Headers should be handled separately, but for now include in body
             parameters[source.Header] = value;
         }
+    }
+
+    private Activity? CreateChildActivity(Job job, string operationName)
+    {
+        // If we have a traceparent from the original request, restore the parent context using W3C ActivityContext
+        if (!string.IsNullOrEmpty(job.TraceParent))
+        {
+            try
+            {
+                if (ActivityContext.TryParse(job.TraceParent, job.TraceState, out var parentContext))
+                {
+                    // Start activity with explicit parent context so the trace id is preserved and this becomes a sibling (child of the parentContext)
+                    var activity = _activitySource.StartActivity(operationName, ActivityKind.Internal, parentContext);
+                    if (activity == null)
+                    {
+                        _logger.LogWarning("ActivitySource.StartActivity returned null for job {JobId} when using parent context", job.Id);
+                    }
+                    return activity;
+                }
+                else
+                {
+                    _logger.LogWarning("Failed to parse W3C traceparent for job {JobId}: {TraceParent}", job.Id, job.TraceParent);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error restoring parent context for job {JobId}: {TraceParent}", job.Id, job.TraceParent);
+            }
+        }
+        
+        // Fallback: create a new root activity if no parent context available
+        var fallbackActivity = _activitySource.StartActivity(operationName);
+        if (fallbackActivity != null)
+        {
+            _logger.LogDebug("Created root activity {ActivityId} for job {JobId} (no parent trace)", 
+                fallbackActivity.Id, job.Id);
+        }
+        return fallbackActivity;
     }
 }

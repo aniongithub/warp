@@ -66,20 +66,14 @@ public sealed class OpenApiValidator : MiddlewareBase<OpenApiValidatorOptions>
         return new MemoryStream(Encoding.UTF8.GetBytes(text));
     }
 
-    protected override async Task InvokeAsync(HttpContext context, RequestDelegate next)
+    protected override async Task<IResult> ProcessAsync(HttpContext context)
     {
-        // Short-circuit if this middleware shouldn't apply to this request
-        if (!ShouldApplyToRequest(context))
-        {
-            await next(context);
-            return;
-        }
-
-        // Do NOT set context.Items["RequestPath"] here. Only read it.
-        var method = context.Request.Method.ToLowerInvariant();
+        // Get the final request path after all transforms have been applied
         var path = context.GetRequestPath();
+        var method = context.Request.Method.ToLowerInvariant();
 
         // Ensure we handle /submit paths correctly for validation with OpenAPI spec that will not
+        // have /submit suffixes on paths
         var operationType = GetOperationType(context.Request.Path, context.Request.Method);
         if (operationType == "AsyncSubmit")
         {
@@ -94,18 +88,18 @@ public sealed class OpenApiValidator : MiddlewareBase<OpenApiValidatorOptions>
         if (match.Key == null)
         {
             Logger.LogWarning($"No OpenAPI path matches request: {path}");
-            context.Response.StatusCode = 404;
-            await context.Response.WriteAsync($"Path not found in OpenAPI spec: {path}");
-            return;
+            return Results
+                .Problem(statusCode: 400, title: "Bad Request", detail: $"Request not found in OpenAPI spec: {path}")
+                .Stop();
         }
 
         // Check if method is allowed
         if (!match.Value.Operations.TryGetValue(ParseOperationType(method), out var operation))
         {
             Logger.LogWarning($"Method {method} not allowed for path {path} in OpenAPI spec");
-            context.Response.StatusCode = 405;
-            await context.Response.WriteAsync($"Method not allowed in OpenAPI spec: {method}");
-            return;
+            return Results.
+                Problem(statusCode: 405, title: "Method Not Allowed", detail: $"Method not allowed in OpenAPI spec: {method}")
+                .Stop();
         }
 
         // Validate parameters (query, header, path)
@@ -220,12 +214,14 @@ public sealed class OpenApiValidator : MiddlewareBase<OpenApiValidatorOptions>
         if (errors.Count > 0)
         {
             Logger.LogWarning($"OpenAPI validation failed: {string.Join(", ", errors)}");
-            context.Response.StatusCode = 400;
-            await context.Response.WriteAsync($"OpenAPI validation failed: {string.Join(", ", errors)}");
-            return;
+            return Results
+                .Problem(statusCode: 400, title: "Bad Request", detail: $"OpenAPI validation failed: {string.Join(", ", errors)}")
+                .Stop();
         }
 
-        await next(context);
+        return Results
+            .Ok()
+            .Continue();
     }
 
     private static bool OpenApiPathMatch(string openApiPath, string requestPath)

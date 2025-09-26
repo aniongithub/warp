@@ -15,7 +15,10 @@ const int USERS_PAGESIZE = 25;
 var builder = WebApplication.CreateBuilder(args);
 var assemblyName = Assembly.GetExecutingAssembly().GetName().Name ?? "warp.apis.admin";
 
-builder.Configuration.AddWarpConfiguration(assemblyName, clearExistingSources: true);
+if (Environment.GetEnvironmentVariable("WARP_CONFIG_BASE_DIR") is string configBaseDir &&
+    !string.IsNullOrWhiteSpace(configBaseDir))
+    builder.Configuration.AddWarpConfiguration(assemblyName, clearExistingSources: true,
+        baseDirectory: configBaseDir);
 
 var dataContextSection = builder.Configuration.GetSection("DataContext");
 IDataContext dataContext;
@@ -240,5 +243,43 @@ app.MapPut("/admin/users/{email}/permissions", async ([FromServices] IDataContex
 .WithSummary("Set user permissions")
 .WithDescription("Sets the permissions for a specific user. Admin can assign any permissions. If the user doesn't exist, a new one is created.")
 .Produces(200, typeof(List<string>), "application/json");
+
+// GET /admin/users/{email}/quotas - get a user's quotas
+app.MapGet("/admin/users/{email}/quotas", ([FromServices] IDataContext dataContext, string email) =>
+{
+    var user = dataContext.Users.FirstOrDefault(u => u.Email == email);
+    if (user == null)
+        return Results.NotFound();
+    var quotas = dataContext.Quotas.Where(q => q.Key == email).ToList();
+    return Results.Ok(quotas);
+})
+.WithTags("Users")
+.WithSummary("Get user quotas")
+.WithDescription("Returns the quotas assigned to a specific user")
+.Produces(200, typeof(List<object>), "application/json")
+.Produces(404, typeof(string), "text/plain");
+
+// SET /admin/users/{email}/{quotaId}/usage - set a user's quota usage by id
+app.MapPut("/admin/users/{email}/quotas/{quotaId}/usage", async ([FromServices] IDataContext dataContext, string email, string quotaId, [FromBody] float usage) =>
+{
+    var user = dataContext.Users.FirstOrDefault(u => u.Email == email);
+    if (user == null)
+        return Results.NotFound("User not found.");
+
+    var quota = dataContext.Quotas.FirstOrDefault(q => q.Key == email && q.Id == quotaId);
+    if (quota != null)
+    {
+        quota.Used = usage;
+        await dataContext.SaveAsync(quota);
+        return Results.Ok(quota);
+    }
+    else
+        return Results.NotFound("Quota not found.");
+})
+.WithTags("Users")
+.WithSummary("Set user quota by ID")
+.WithDescription("Sets a specific quota for a user by quota ID. If the quota doesn't exist, a 404 error is returned.")
+.Produces(200, typeof(object), "application/json")
+.Produces(404, typeof(string), "text/plain");
 
 app.Run();

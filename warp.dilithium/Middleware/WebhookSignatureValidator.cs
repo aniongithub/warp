@@ -66,15 +66,8 @@ public sealed class WebhookSignatureValidator : MiddlewareBase<WebhookSignatureV
         }
     }
 
-    protected override async Task InvokeAsync(HttpContext context, RequestDelegate next)
+    protected override async Task<IResult> ProcessAsync(HttpContext context)
     {
-        // Check if we should apply to this request type
-        if (!ShouldApplyToRequest(context))
-        {
-            await next(context);
-            return;
-        }
-
         var request = context.Request;
         
         // Get the signature from headers
@@ -83,28 +76,30 @@ public sealed class WebhookSignatureValidator : MiddlewareBase<WebhookSignatureV
             if (Options.AllowMissingSignature)
             {
                 Logger.LogWarning("Missing webhook signature header '{Header}' but allowing request", Options.SignatureHeader);
-                await next(context);
-                return;
+                return Results.Ok().Continue();
             }
             
             Logger.LogWarning("Missing required webhook signature header: {Header}", Options.SignatureHeader);
-            await RespondUnauthorized(context, "Missing webhook signature");
-            return;
+            return Results
+                .Problem(statusCode: 401, title: "Unauthorized", detail: "Missing webhook signature")
+                .Stop();
         }
 
         var receivedSignature = signatureHeader.ToString().Trim();
         if (string.IsNullOrEmpty(receivedSignature))
         {
             Logger.LogWarning("Empty webhook signature in header: {Header}", Options.SignatureHeader);
-            await RespondUnauthorized(context, "Empty webhook signature");
-            return;
+            return Results
+                .Problem(statusCode: 401, title: "Unauthorized", detail: "Empty webhook signature")
+                .Stop();
         }
 
         // Validate timestamp if enabled
         if (Options.ValidateTimestamp)
         {
-            if (!await ValidateTimestamp(context))
-                return; // ValidateTimestamp already sent response
+            var timestampResult = ValidateTimestampResult(context);
+            if (timestampResult != null)
+                return timestampResult; // Validation failed
         }
 
         // Read the request body
@@ -116,8 +111,9 @@ public sealed class WebhookSignatureValidator : MiddlewareBase<WebhookSignatureV
         if (string.IsNullOrEmpty(secretKey))
         {
             Logger.LogError("No secret key available for webhook signature validation");
-            await RespondUnauthorized(context, "Configuration error");
-            return;
+            return Results
+                .Problem(statusCode: 401, title: "Unauthorized", detail: "Configuration error")
+                .Stop();
         }
 
         // Compute the expected signature
@@ -132,8 +128,9 @@ public sealed class WebhookSignatureValidator : MiddlewareBase<WebhookSignatureV
         if (!IsValidSignature(receivedSignature, expectedSignature))
         {
             Logger.LogWarning("Invalid webhook signature. Expected format: {Format}", $"{Options.SignaturePrefix}<hash>");
-            await RespondUnauthorized(context, "Invalid webhook signature");
-            return;
+            return Results
+                .Problem(statusCode: 401, title: "Unauthorized", detail: "Invalid webhook signature")
+                .Stop();
         }
 
         Logger.LogDebug("Webhook signature validated successfully");
@@ -141,24 +138,26 @@ public sealed class WebhookSignatureValidator : MiddlewareBase<WebhookSignatureV
         // Reset body stream position for downstream middleware
         request.Body.Position = 0;
         
-        await next(context);
+        return Results.Ok().Continue();
     }
 
-    private async Task<bool> ValidateTimestamp(HttpContext context)
+    private IResult? ValidateTimestampResult(HttpContext context)
     {
         if (!context.Request.Headers.TryGetValue(Options.TimestampHeader, out var timestampHeader))
         {
             Logger.LogWarning("Missing required timestamp header: {Header}", Options.TimestampHeader);
-            await RespondUnauthorized(context, "Missing timestamp");
-            return false;
+            return Results
+                .Problem(statusCode: 401, title: "Unauthorized", detail: "Missing timestamp")
+                .Stop();
         }
 
         var timestampValue = timestampHeader.ToString().Trim();
         if (!long.TryParse(timestampValue, out var timestamp))
         {
             Logger.LogWarning("Invalid timestamp format: {Timestamp}", timestampValue);
-            await RespondUnauthorized(context, "Invalid timestamp format");
-            return false;
+            return Results
+                .Problem(statusCode: 401, title: "Unauthorized", detail: "Invalid timestamp format")
+                .Stop();
         }
 
         var currentTimestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -167,11 +166,12 @@ public sealed class WebhookSignatureValidator : MiddlewareBase<WebhookSignatureV
         if (age > Options.MaxTimestampAge)
         {
             Logger.LogWarning("Timestamp too old: {Age} seconds (max: {Max})", age, Options.MaxTimestampAge);
-            await RespondUnauthorized(context, "Request timestamp too old");
-            return false;
+            return Results
+                .Problem(statusCode: 401, title: "Unauthorized", detail: "Request timestamp too old")
+                .Stop();
         }
 
-        return true;
+        return null; // No error, validation passed
     }
 
     private async Task<string> ReadRequestBodyAsync(HttpRequest request)
@@ -228,21 +228,4 @@ public sealed class WebhookSignatureValidator : MiddlewareBase<WebhookSignatureV
         return result == 0;
     }
 
-    private async Task RespondUnauthorized(HttpContext context, string message)
-    {
-        if (!context.Response.HasStarted)
-        {
-            context.Response.StatusCode = 401;
-            context.Response.ContentType = "application/json";
-            
-            var response = new
-            {
-                error = "Unauthorized",
-                message = message,
-                timestamp = DateTimeOffset.UtcNow.ToString("O")
-            };
-            
-            await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(response));
-        }
-    }
 }

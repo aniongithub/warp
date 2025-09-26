@@ -1,0 +1,11 @@
+# Our Warp Developer API configuration for the API Keys example.
+
+$include: "datacontext.yml" # Use an include to share configuration definitions between multiple files
+
+api_settings:
+  api_key_prefix: "warp_" # Prefix
+
+Kestrel:
+  Endpoints:
+    Internal:
+      Url: "http://127.0.0.1:5002"

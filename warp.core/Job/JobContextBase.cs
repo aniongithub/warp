@@ -37,10 +37,11 @@ public abstract class JobContextBase : IJobContext
     // Abstract methods that concrete implementations must provide
     public abstract IJob CreateJob();
     public abstract Task EnqueueJobAsync<T>(T job) where T : class, IJob;
-    public abstract Task<T> DequeueJobAsync<T>() where T : class, IJob;
+    public abstract Task<DequeueResult<T>> DequeueJobAsync<T>() where T : class, IJob;
     public abstract Task<T> LookupJobAsync<T>(string id, JobStatus status, string userId) where T : class, IJob;
     public abstract Task<JobStatus> GetJobStatusAsync(string id, string userId);
     public abstract Task<IAsyncEnumerable<T>> ListJobs<T>(string userId, JobStatus status, int batchSize) where T : class, IJob;
+    public abstract Task UpdateJobAsync<T>(T job, JobStatus newStatus, string? error = null, string? output = null) where T : class, IJob;
 }
 
 /// <summary>

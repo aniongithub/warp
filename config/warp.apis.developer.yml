@@ -1,8 +1,0 @@
-# Warp Developer API Configuration
-$include: "shared/${DATACONTEXT_IMPL}-datacontext.yml"
-$include: "shared/opentelemetry.yml"
-
-Kestrel:
-  Endpoints:
-    Internal:
-      Url: "http://127.0.0.1:5002"

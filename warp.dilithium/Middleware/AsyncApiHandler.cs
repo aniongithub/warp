@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Warp.Core.Data;
@@ -64,15 +65,14 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
         _concurrencyLimiter = new SemaphoreSlim(options.MaxConcurrentDispatches, options.MaxConcurrentDispatches);
     }
 
-    protected override async Task InvokeAsync(HttpContext context, RequestDelegate next)
+    protected override async Task<IResult> ProcessAsync(HttpContext context)
     {
         var operation = DetermineOperation(context.Request.Path, context.Request.Method);
         
         if (operation == null)
         {
             // Not an async API operation, pass through
-            await next(context);
-            return;
+            return Results.Ok().Continue();
         }
 
         try
@@ -80,31 +80,37 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
             switch (operation.Type)
             {
                 case AsyncOperation.Submit:
-                    await HandleSubmit(context, operation);
-                    break;
+                    return await HandleSubmit(context, operation);
                 case AsyncOperation.Status:
-                    await HandleStatus(context, operation);
-                    break;
+                    return await HandleStatus(context, operation);
                 case AsyncOperation.Result:
-                    await HandleResult(context, operation);
-                    break;
+                    return await HandleResult(context, operation);
                 case AsyncOperation.Cancel:
-                    await HandleCancel(context, operation);
-                    break;
+                    return await HandleCancel(context, operation);
+                default:
+                    return Results
+                        .Problem(statusCode: 400, title: "Bad Request", detail: "Unknown async operation type")
+                        .Stop();
             }
         }
         catch (ArgumentException ex)
         {
-            await WriteJsonResponse(context, 400, new { error = ex.Message });
+            return Results
+                .Problem(statusCode: 400, title: "Bad Request", detail: ex.Message)
+                .Stop();
         }
         catch (KeyNotFoundException ex)
         {
-            await WriteJsonResponse(context, 404, new { error = ex.Message });
+            return Results
+                .Problem(statusCode: 404, title: "Not Found", detail: ex.Message)
+                .Stop();
         }
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error handling async API operation");
-            await WriteJsonResponse(context, 500, new { error = "Internal server error" });
+            return Results
+                .Problem(statusCode: 500, title: "Internal Server Error", detail: "Internal server error")
+                .Stop();
         }
     }
 
@@ -139,7 +145,7 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
         };
     }
 
-    private async Task HandleSubmit(HttpContext context, OperationContext operation)
+    private async Task<IResult> HandleSubmit(HttpContext context, OperationContext operation)
     {
         // Check if we can acquire a slot for concurrent dispatch
         var timeoutMs = Options.DispatchTimeoutMs;
@@ -151,8 +157,9 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
         if (!acquired)
         {
             Logger.LogWarning("Rejected job submission due to max concurrent dispatches limit ({MaxConcurrent})", Options.MaxConcurrentDispatches);
-            await WriteJsonResponse(context, 429, new { error = "Too many concurrent requests. Please try again later." });
-            return;
+            return Results
+                .Problem(statusCode: 429, title: "Too Many Requests", detail: "Too many concurrent requests. Please try again later.")
+                .Stop();
         }
 
         try
@@ -161,14 +168,17 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
                 _concurrencyLimiter.CurrentCount, Options.MaxConcurrentDispatches);
                 
             var extractedInputs = await ExtractInputsAsync(context);
-            var parameterMappings = BuildParameterMappings();
+            var parameterMappings = BuildParameterMappings(context, extractedInputs);
             var routingInfo = ExtractRoutingInfo(context);
+            var tracingContext = ExtractTracingContext(context);
             var user = await GetUserAsync(context);
-            var jobId = await CreateAndEnqueueJobAsync(user, extractedInputs, parameterMappings, routingInfo);
-            
-            await WriteJsonResponse(context, 202, new { jobId });
+            var jobId = await CreateAndEnqueueJobAsync(user, extractedInputs, parameterMappings, routingInfo, tracingContext);
             
             Logger.LogDebug("Job {JobId} submitted successfully, releasing concurrency slot", jobId);
+            
+            return Results
+                .Json(new { jobId }, statusCode: 202)
+                .Stop();
         }
         finally
         {
@@ -178,43 +188,55 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
         }
     }
 
-    private async Task HandleStatus(HttpContext context, OperationContext operation)
+    private async Task<IResult> HandleStatus(HttpContext context, OperationContext operation)
     {
         if (string.IsNullOrEmpty(operation.JobId))
         {
-            throw new ArgumentException("Job ID is required for status operation");
+            return Results
+                .Problem(statusCode: 400, title: "Bad Request", detail: "Job ID is required for status operation")
+                .Stop();
         }
         
         var user = await GetUserAsync(context);
         var status = await GetJobStatusAsync(operation.JobId, user.Id!);
         
-        await WriteJsonResponse(context, 200, new { jobId = operation.JobId, status = status.ToString() });
+        return Results
+            .Json(new { jobId = operation.JobId, status = status.ToString() })
+            .Stop();
     }
 
-    private async Task HandleResult(HttpContext context, OperationContext operation)
+    private async Task<IResult> HandleResult(HttpContext context, OperationContext operation)
     {
         if (string.IsNullOrEmpty(operation.JobId))
         {
-            throw new ArgumentException("Job ID is required for result operation");
+            return Results
+                .Problem(statusCode: 400, title: "Bad Request", detail: "Job ID is required for result operation")
+                .Stop();
         }
         
         var user = await GetUserAsync(context);
         var result = await GetJobResultAsync(operation.JobId, user.Id!);
         
-        await WriteJsonResponse(context, 200, result);
+        return Results
+            .Json(result)
+            .Stop();
     }
 
-    private async Task HandleCancel(HttpContext context, OperationContext operation)
+    private async Task<IResult> HandleCancel(HttpContext context, OperationContext operation)
     {
         if (string.IsNullOrEmpty(operation.JobId))
         {
-            throw new ArgumentException("Job ID is required for cancel operation");
+            return Results
+                .Problem(statusCode: 400, title: "Bad Request", detail: "Job ID is required for cancel operation")
+                .Stop();
         }
         
         var user = await GetUserAsync(context);
         await CancelJobAsync(operation.JobId, user.Id!);
         
-        await WriteJsonResponse(context, 204, null);
+        return Results
+            .NoContent()
+            .Stop();
     }
 
     protected Task<IUser> GetUserAsync(HttpContext context)
@@ -228,35 +250,67 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
         var user = DataContext.Users.FirstOrDefault(u => u.Email == userEmail);
         if (user == null)
         {
-            throw new ArgumentException("User not found");
+            throw new KeyNotFoundException($"User not found: {userEmail}");
         }
         
         return Task.FromResult(user);
     }
 
-    protected async Task WriteJsonResponse(HttpContext context, int statusCode, object? data)
-    {
-        context.Response.StatusCode = statusCode;
-        context.Response.ContentType = "application/json";
-        
-        if (data != null)
-        {
-            var json = JsonSerializer.Serialize(data);
-            await context.Response.WriteAsync(json);
-        }
-    }
-
     // Abstract methods for concrete implementations
-    protected abstract Task<string> CreateAndEnqueueJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo);
+    protected abstract Task<string> CreateAndEnqueueJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo, TracingContext tracingContext);
     protected abstract Task<JobStatus> GetJobStatusAsync(string jobId, string userId);
     protected abstract Task<JobResult> GetJobResultAsync(string jobId, string userId);
     protected abstract Task CancelJobAsync(string jobId, string userId);
 
+    // Helper method to extract tracing context
+    protected TracingContext ExtractTracingContext(HttpContext context)
+    {
+        var incomingTraceParent = context.Request.Headers["traceparent"].FirstOrDefault();
+        var incomingTraceState = context.Request.Headers["tracestate"].FirstOrDefault();
+
+        // Prefer the current Activity's parent (so the job's activity becomes a sibling to the current middleware span).
+        // Fall back to the incoming header if no current activity parent is available.
+        string? selectedTraceParent = null;
+        string? selectedTraceState = null;
+
+        var current = Activity.Current;
+        if (current != null && !current.ParentSpanId.Equals(default(ActivitySpanId)))
+        {
+                try
+                {
+                    // Build a W3C traceparent header using the current activity's TraceId and ParentSpanId
+                    var flagsByte = (byte)current.ActivityTraceFlags;
+                    var flags = flagsByte.ToString("x2");
+                    selectedTraceParent = $"00-{current.TraceId}-{current.ParentSpanId}-{flags}";
+                    selectedTraceState = current.TraceStateString;
+                }
+            catch
+            {
+                selectedTraceParent = incomingTraceParent;
+                selectedTraceState = incomingTraceState;
+            }
+        }
+        else
+        {
+            selectedTraceParent = incomingTraceParent;
+            selectedTraceState = incomingTraceState;
+        }
+
+        // No extra diagnostics here in normal operation; return the selected context
+
+        return new TracingContext
+        {
+            TraceParent = selectedTraceParent,
+            TraceState = selectedTraceState
+        };
+    }
+
     // Transform helper methods
-    private Dictionary<string, ParameterMapping> BuildParameterMappings()
+    private Dictionary<string, ParameterMapping> BuildParameterMappings(HttpContext context, Dictionary<string, object?> extractedInputs)
     {
         var mappings = new Dictionary<string, ParameterMapping>();
         
+        // First, add explicitly configured mappings
         foreach (var (paramName, inputMapping) in Options.Input)
         {
             mappings[paramName] = new ParameterMapping
@@ -275,6 +329,52 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
                     Options = inputMapping.Transform.Options
                 } : null
             };
+        }
+        
+        // Then, add mappings for any auto-extracted parameters that don't have explicit mappings
+        foreach (var paramName in extractedInputs.Keys)
+        {
+            if (!mappings.ContainsKey(paramName))
+            {
+                // Determine the source based on where the parameter likely came from
+                var source = new Warp.Core.Job.InputSource();
+                
+                if (paramName == "_httpMethod")
+                {
+                    // Special case: _httpMethod is internal metadata, no need to map back
+                    source.Query = paramName;
+                }
+                else if (context.Request.Query.ContainsKey(paramName))
+                {
+                    // Parameter came from query string
+                    source.Query = paramName;
+                }
+                else if (context.Request.Headers.ContainsKey(paramName))
+                {
+                    // Parameter came from headers
+                    source.Header = paramName;
+                }
+                else
+                {
+                    // Default to body for other parameters (form data, JSON, etc.)
+                    source.Body = paramName;
+                }
+                
+                mappings[paramName] = new ParameterMapping
+                {
+                    From = source,
+                    Required = false,
+                    Default = null,
+                    Transform = null
+                };
+                
+                var sourceDescription = !string.IsNullOrEmpty(source.Header) ? $"Header:{source.Header}" :
+                                       !string.IsNullOrEmpty(source.Query) ? $"Query:{source.Query}" :
+                                       !string.IsNullOrEmpty(source.Body) ? $"Body:{source.Body}" : "Unknown";
+                
+                Logger.LogDebug("Created auto-mapping for parameter {ParamName} from {Source}", 
+                    paramName, sourceDescription);
+            }
         }
         
         return mappings;
@@ -314,11 +414,13 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
         var relevantHeaders = new Dictionary<string, string>();
         foreach (var header in context.Request.Headers)
         {
-            // Include auth headers and other important ones
+            // Include auth headers, tracing headers, and other important ones
             if (header.Key.StartsWith("Authorization", StringComparison.OrdinalIgnoreCase) ||
                 header.Key.StartsWith("X-", StringComparison.OrdinalIgnoreCase) ||
                 header.Key.Equals("User-Agent", StringComparison.OrdinalIgnoreCase) ||
-                header.Key.Equals("Accept", StringComparison.OrdinalIgnoreCase))
+                header.Key.Equals("Accept", StringComparison.OrdinalIgnoreCase) ||
+                header.Key.Equals("traceparent", StringComparison.OrdinalIgnoreCase) ||
+                header.Key.Equals("tracestate", StringComparison.OrdinalIgnoreCase))
             {
                 relevantHeaders[header.Key] = header.Value.ToString();
             }
@@ -337,6 +439,9 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
     private async Task<Dictionary<string, object?>> ExtractInputsAsync(HttpContext context)
     {
         var extractedInputs = new Dictionary<string, object?>();
+
+        // Preserve the original HTTP method for job processing
+        extractedInputs["_httpMethod"] = context.Request.Method;
 
         // Auto-extract all query parameters
         foreach (var query in context.Request.Query)
