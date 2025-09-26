@@ -24,7 +24,7 @@ public sealed class RedisAsyncApiHandler : AsyncApiHandler<RedisAsyncApiHandlerO
         _jobContext = new RedisJobContext(options.Channel, options.ConnectionString, options.DatabaseIndex);
     }
 
-    protected override async Task<string> CreateAndEnqueueJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo)
+    protected override async Task<string> CreateAndEnqueueJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo, TracingContext tracingContext)
     {
         var job = new Job
         {
@@ -37,7 +37,10 @@ public sealed class RedisAsyncApiHandler : AsyncApiHandler<RedisAsyncApiHandlerO
             TargetDestination = routingInfo.TargetDestination,
             Parameters = extractedInputs,
             Headers = routingInfo.Headers,
-            ParameterMappings = parameterMappings
+            ParameterMappings = parameterMappings,
+            // Set tracing context
+            TraceParent = tracingContext.TraceParent,
+            TraceState = tracingContext.TraceState
         };
 
         await _jobContext.EnqueueJobAsync(job);

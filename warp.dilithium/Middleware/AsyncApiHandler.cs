@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Warp.Core.Data;
@@ -169,8 +170,9 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
             var extractedInputs = await ExtractInputsAsync(context);
             var parameterMappings = BuildParameterMappings(context, extractedInputs);
             var routingInfo = ExtractRoutingInfo(context);
+            var tracingContext = ExtractTracingContext(context);
             var user = await GetUserAsync(context);
-            var jobId = await CreateAndEnqueueJobAsync(user, extractedInputs, parameterMappings, routingInfo);
+            var jobId = await CreateAndEnqueueJobAsync(user, extractedInputs, parameterMappings, routingInfo, tracingContext);
             
             Logger.LogDebug("Job {JobId} submitted successfully, releasing concurrency slot", jobId);
             
@@ -255,10 +257,53 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
     }
 
     // Abstract methods for concrete implementations
-    protected abstract Task<string> CreateAndEnqueueJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo);
+    protected abstract Task<string> CreateAndEnqueueJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo, TracingContext tracingContext);
     protected abstract Task<JobStatus> GetJobStatusAsync(string jobId, string userId);
     protected abstract Task<JobResult> GetJobResultAsync(string jobId, string userId);
     protected abstract Task CancelJobAsync(string jobId, string userId);
+
+    // Helper method to extract tracing context
+    protected TracingContext ExtractTracingContext(HttpContext context)
+    {
+        var incomingTraceParent = context.Request.Headers["traceparent"].FirstOrDefault();
+        var incomingTraceState = context.Request.Headers["tracestate"].FirstOrDefault();
+
+        // Prefer the current Activity's parent (so the job's activity becomes a sibling to the current middleware span).
+        // Fall back to the incoming header if no current activity parent is available.
+        string? selectedTraceParent = null;
+        string? selectedTraceState = null;
+
+        var current = Activity.Current;
+        if (current != null && !current.ParentSpanId.Equals(default(ActivitySpanId)))
+        {
+                try
+                {
+                    // Build a W3C traceparent header using the current activity's TraceId and ParentSpanId
+                    var flagsByte = (byte)current.ActivityTraceFlags;
+                    var flags = flagsByte.ToString("x2");
+                    selectedTraceParent = $"00-{current.TraceId}-{current.ParentSpanId}-{flags}";
+                    selectedTraceState = current.TraceStateString;
+                }
+            catch
+            {
+                selectedTraceParent = incomingTraceParent;
+                selectedTraceState = incomingTraceState;
+            }
+        }
+        else
+        {
+            selectedTraceParent = incomingTraceParent;
+            selectedTraceState = incomingTraceState;
+        }
+
+        // No extra diagnostics here in normal operation; return the selected context
+
+        return new TracingContext
+        {
+            TraceParent = selectedTraceParent,
+            TraceState = selectedTraceState
+        };
+    }
 
     // Transform helper methods
     private Dictionary<string, ParameterMapping> BuildParameterMappings(HttpContext context, Dictionary<string, object?> extractedInputs)
@@ -369,11 +414,13 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
         var relevantHeaders = new Dictionary<string, string>();
         foreach (var header in context.Request.Headers)
         {
-            // Include auth headers and other important ones
+            // Include auth headers, tracing headers, and other important ones
             if (header.Key.StartsWith("Authorization", StringComparison.OrdinalIgnoreCase) ||
                 header.Key.StartsWith("X-", StringComparison.OrdinalIgnoreCase) ||
                 header.Key.Equals("User-Agent", StringComparison.OrdinalIgnoreCase) ||
-                header.Key.Equals("Accept", StringComparison.OrdinalIgnoreCase))
+                header.Key.Equals("Accept", StringComparison.OrdinalIgnoreCase) ||
+                header.Key.Equals("traceparent", StringComparison.OrdinalIgnoreCase) ||
+                header.Key.Equals("tracestate", StringComparison.OrdinalIgnoreCase))
             {
                 relevantHeaders[header.Key] = header.Value.ToString();
             }

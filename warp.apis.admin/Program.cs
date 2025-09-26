@@ -15,8 +15,10 @@ const int USERS_PAGESIZE = 25;
 var builder = WebApplication.CreateBuilder(args);
 var assemblyName = Assembly.GetExecutingAssembly().GetName().Name ?? "warp.apis.admin";
 
-builder.Configuration.AddWarpConfiguration(assemblyName, clearExistingSources: true,
-    baseDirectory: Environment.GetEnvironmentVariable("WARP_CONFIG_BASE_DIR") ?? "./config");
+if (Environment.GetEnvironmentVariable("WARP_CONFIG_BASE_DIR") is string configBaseDir &&
+    !string.IsNullOrWhiteSpace(configBaseDir))
+    builder.Configuration.AddWarpConfiguration(assemblyName, clearExistingSources: true,
+        baseDirectory: configBaseDir);
 
 var dataContextSection = builder.Configuration.GetSection("DataContext");
 IDataContext dataContext;

@@ -2,11 +2,13 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Warp.Core.Helper;
 using Warp.Core.Job;
-using Warp.Core.Job.Contexts;
 using Warp.Core.Job.Delivery;
 using Warp.Dilithium.Transforms;
 
@@ -29,8 +31,34 @@ class Program
                 })
                 .ConfigureServices((context, services) =>
                 {
-                    services.AddSingleton<EPS>();
                     services.AddHttpClient();
+                    
+                    // Configure OpenTelemetry for distributed tracing
+                    var config = context.Configuration;
+                    var otelSection = config.GetSection("OpenTelemetry");
+                    var sourceNames = otelSection.GetSection("SourceNames").Get<string[]>() ?? new[] { "Warp" };
+                    var otelEndpoint = otelSection.GetValue<string>("Endpoint") ?? "http://localhost:4317";
+                    var serviceName = otelSection.GetValue<string>("ServiceName") ?? "Warp";
+
+                    services.AddOpenTelemetry().WithTracing(tracer =>
+                    {
+                        tracer
+                            .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(serviceName))
+                            .AddSource(sourceNames)
+                            .AddConsoleExporter() // For hierarchical console logging
+                            .AddOtlpExporter(otlp => otlp.Endpoint = new Uri(otelEndpoint)) // For Jaeger/external tools
+                            .AddHttpClientInstrumentation();
+                    });
+                    
+                    // Register EPS with the configured source name
+                    services.AddSingleton<EPS>(serviceProvider =>
+                    {
+                        var logger = serviceProvider.GetRequiredService<ILogger<EPS>>();
+                        var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+                        var httpClient = serviceProvider.GetRequiredService<HttpClient>();
+                        var sourceName = sourceNames.Length > 0 ? sourceNames[0] : "Warp";
+                        return new EPS(logger, configuration, httpClient, serviceProvider, sourceName);
+                    });
                 })
                 .ConfigureLogging(logging =>
                 {
@@ -39,7 +67,18 @@ class Program
                 });
 
             var host = builder.Build();
-            
+
+            // Ensure TracerProvider is initialized so ActivitySource listeners are registered
+            try
+            {
+                var tracerProvider = host.Services.GetRequiredService<TracerProvider>();
+                tracerProvider.ForceFlush(1000);
+            }
+            catch
+            {
+                // best-effort: failure to flush shouldn't stop startup
+            }
+
             var engine = host.Services.GetRequiredService<EPS>();
             var logger = host.Services.GetRequiredService<ILogger<Program>>();
             
@@ -71,13 +110,17 @@ internal sealed class EPS
     private readonly IServiceProvider _serviceProvider;
     private List<JobConfiguration> _jobConfigurations = new();
     private readonly CancellationTokenSource _cancellationTokenSource = new();
+    private readonly ActivitySource _activitySource;
 
-    public EPS(ILogger<EPS> logger, IConfiguration configuration, HttpClient httpClient, IServiceProvider serviceProvider)
+    public EPS(ILogger<EPS> logger, IConfiguration configuration, HttpClient httpClient, IServiceProvider serviceProvider, string sourceName)
     {
         _logger = logger;
         _configuration = configuration;
         _httpClient = httpClient;
         _serviceProvider = serviceProvider;
+        
+        // Create ActivitySource after TracerProvider is initialized
+        _activitySource = new ActivitySource(sourceName);
     }
 
     public async Task InitializeAsync()
@@ -368,9 +411,17 @@ internal sealed class EPS
 
     private async Task ProcessSingleJobAsync(Job job, IJobContext jobContext, IJobResultDelivery? resultDelivery, JobConfiguration jobConfig)
     {
+        // Create a new activity as a child of the original request's trace
+        using var activity = CreateChildActivity(job, $"Job.Process.{jobConfig.Name}");
+        activity?.SetTag("job.id", job.Id);
+        activity?.SetTag("job.type", jobConfig.Name);
+        activity?.SetTag("job.status", job.Status.ToString());
+        activity?.SetTag("job.user_id", job.User?.Id ?? "unknown");
+        
         try
         {
-            _logger.LogInformation("Processing job: {JobId} (type: {JobType})", job.Id, jobConfig.Name);
+            _logger.LogInformation("Processing job: {JobId} (type: {JobType}) with trace: {TraceId}", 
+                job.Id, jobConfig.Name, activity?.TraceId.ToString() ?? "none");
             
             // Get the endpoint from job configuration
             var targetEndpoint = jobConfig.Endpoint;
@@ -413,6 +464,9 @@ internal sealed class EPS
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, $"Job execution error: {ex.Message}");
+            activity?.SetTag("exception.type", ex.GetType().Name);
+            activity?.SetTag("exception.message", ex.Message);
             _logger.LogError(ex, "Error executing job {JobId}", job.Id);
             
             try
@@ -428,9 +482,15 @@ internal sealed class EPS
 
     private async Task ExecuteJobAsync(Job job, IJobContext jobContext, string syncUrl, Dictionary<string, object?> originalParameters)
     {
+        using var activity = _activitySource.StartActivity("Job.Execute.HttpCall");
+        activity?.SetTag("job.id", job.Id);
+        activity?.SetTag("http.url", syncUrl);
+        activity?.SetTag("http.method", job.Parameters.ContainsKey("_httpMethod") ? job.Parameters["_httpMethod"]?.ToString() : "POST");
+        
         try
         {
-            _logger.LogInformation("🚀 Executing job {JobId} at {SyncUrl}", job.Id, syncUrl);
+            _logger.LogInformation("🚀 Executing job {JobId} at {SyncUrl} with trace: {TraceId}", 
+                job.Id, syncUrl, activity?.TraceId.ToString() ?? "none");
             
             // Prepare the HTTP request
             using var request = new HttpRequestMessage();
@@ -472,6 +532,25 @@ internal sealed class EPS
                 {
                     // If it's a content header, we'll add it to content headers later
                     _logger.LogDebug("Header {HeaderName} will be added to content headers", header.Key);
+                }
+            }
+            
+            // Add current activity's tracing context to propagate distributed trace
+            if (Activity.Current != null)
+            {
+                var currentTraceParent = Activity.Current.Id;
+                var currentTraceState = Activity.Current.TraceStateString;
+                
+                if (!string.IsNullOrEmpty(currentTraceParent))
+                {
+                    request.Headers.TryAddWithoutValidation("traceparent", currentTraceParent);
+                    _logger.LogDebug("Added traceparent header: {TraceParent}", currentTraceParent);
+                }
+                
+                if (!string.IsNullOrEmpty(currentTraceState))
+                {
+                    request.Headers.TryAddWithoutValidation("tracestate", currentTraceState);
+                    _logger.LogDebug("Added tracestate header: {TraceState}", currentTraceState);
                 }
             }
             
@@ -542,6 +621,12 @@ internal sealed class EPS
                 _logger.LogInformation("✅ Job {JobId} completed in {ElapsedMs}ms with status {StatusCode}", 
                     job.Id, stopwatch.ElapsedMilliseconds, (int)response.StatusCode);
                 
+                // Add response information to activity
+                activity?.SetTag("http.status_code", (int)response.StatusCode);
+                activity?.SetTag("http.response_time_ms", stopwatch.ElapsedMilliseconds);
+                activity?.SetStatus(response.IsSuccessStatusCode ? ActivityStatusCode.Ok : ActivityStatusCode.Error, 
+                    response.IsSuccessStatusCode ? "Success" : $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
+                
                 // Update job status based on response
                 if (response.IsSuccessStatusCode)
                 {
@@ -559,12 +644,16 @@ internal sealed class EPS
         catch (OperationCanceledException) when (_httpClient != null)
         {
             var timeoutError = "Request timeout";
+            activity?.SetStatus(ActivityStatusCode.Error, timeoutError);
             await jobContext.UpdateJobAsync(job, JobStatus.Failed, error: timeoutError);
             _logger.LogWarning("Job {JobId} timed out and marked as failed", job.Id);
         }
         catch (Exception ex)
         {
             var errorMessage = $"Exception during job execution: {ex.Message}";
+            activity?.SetStatus(ActivityStatusCode.Error, errorMessage);
+            activity?.SetTag("exception.type", ex.GetType().Name);
+            activity?.SetTag("exception.message", ex.Message);
             await jobContext.UpdateJobAsync(job, JobStatus.Failed, error: errorMessage);
             _logger.LogError(ex, "Job {JobId} failed with exception", job.Id);
         }
@@ -641,5 +730,43 @@ internal sealed class EPS
             // Headers should be handled separately, but for now include in body
             parameters[source.Header] = value;
         }
+    }
+
+    private Activity? CreateChildActivity(Job job, string operationName)
+    {
+        // If we have a traceparent from the original request, restore the parent context using W3C ActivityContext
+        if (!string.IsNullOrEmpty(job.TraceParent))
+        {
+            try
+            {
+                if (ActivityContext.TryParse(job.TraceParent, job.TraceState, out var parentContext))
+                {
+                    // Start activity with explicit parent context so the trace id is preserved and this becomes a sibling (child of the parentContext)
+                    var activity = _activitySource.StartActivity(operationName, ActivityKind.Internal, parentContext);
+                    if (activity == null)
+                    {
+                        _logger.LogWarning("ActivitySource.StartActivity returned null for job {JobId} when using parent context", job.Id);
+                    }
+                    return activity;
+                }
+                else
+                {
+                    _logger.LogWarning("Failed to parse W3C traceparent for job {JobId}: {TraceParent}", job.Id, job.TraceParent);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error restoring parent context for job {JobId}: {TraceParent}", job.Id, job.TraceParent);
+            }
+        }
+        
+        // Fallback: create a new root activity if no parent context available
+        var fallbackActivity = _activitySource.StartActivity(operationName);
+        if (fallbackActivity != null)
+        {
+            _logger.LogDebug("Created root activity {ActivityId} for job {JobId} (no parent trace)", 
+                fallbackActivity.Id, job.Id);
+        }
+        return fallbackActivity;
     }
 }

@@ -1,5 +1,8 @@
 # Warp Plasma Job Processor Configuration for Async Example
 
+# OpenTelemetry Configuration
+$include: "opentelemetry.yml"
+
 # Multi-consumer job configurations demonstrating different delivery mechanisms
 Jobs:
   # MemoryAlpha job processing with webhook delivery

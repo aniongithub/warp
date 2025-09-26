@@ -146,7 +146,7 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
     // Ensure we use the correct config object, not builder.Configuration
     var otelSection = config.GetSection("OpenTelemetry");
 
-    var sourceNames = otelSection.GetSection("SourceNames").Get<string[]>() ?? new[] { "Warp", "Warp.Logger" };
+    var sourceNames = otelSection.GetSection("SourceNames").Get<string[]>() ?? new[] { "Warp" };
     var otelEndpoint = otelSection.GetValue<string>("Endpoint") ?? "http://localhost:4317";
     var serviceName = otelSection.GetValue<string>("ServiceName") ?? "Warp";
 
