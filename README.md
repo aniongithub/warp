@@ -20,7 +20,7 @@ Warp uses a declarative, config-driven middleware pipeline. Each route can speci
 - **Predispatch**: Runs before dispatching to the backend (e.g., OpenAPI validation)
 - **Postprocess**: Runs after backend response (logging, tracing, etc.)
 
-Middlewares are registered in `appsettings.json` under `PipelineComponents` and referenced by name in route metadata. 
+Middlewares are registered in `appsettings.json` under `PipelineComponents` and referenced by name in route metadata.
 
 ### Extending Warp
 
@@ -38,8 +38,8 @@ This architecture allows us to put Warp together in a variety of ways with pure 
 
 - **[Simple](examples/simple/README.md)** - Minimal API Gateway configuration with basic rate limiting and OpenAPI validation
 - **[JWT/API Key auth & Developer API](examples/apikeys/README.md)** - JWT and/or API key authentication with developer portal key management
-- **[Quotas & Permissions](examples/quotas/README.md)** - Permission-based quota tracking with usage-based billing and monetization
-- **[Async-ification of synchronous APIs](examples/async/README.md)** - Transform synchronous APIs to asynchronous job processing with real-time notifications
+- **[Quotas & Permissions](examples/quotas/README.md)** - Permission-based quota tracking with usage-monitoring.
+- **[Async-ification of synchronous APIs](examples/async/README.md)** - Transform synchronous APIs to asynchronous job processing with real-time notifications and end-to-end OpenTelemetry tracking
 
 ## Persistence and Data Storage
 

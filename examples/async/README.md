@@ -2,6 +2,8 @@
 
 This example demonstrates how Warp Gateway transforms synchronous APIs into asynchronous job processing with real-time notifications with no changes, only configuration. This can also allow for queue based scaling with KEDA or other scaler mechanisms.
 
+It also adds OpenTelemetry configuration to show end-to-end, unified traces for complete visibility into the lifecycle of this async API.
+
 ## Architecture Flow
 
 ```mermaid
@@ -106,5 +108,6 @@ Routes:
 - **Job Queueing and Processing**: Configurable, transparent job queueing and processing with Warp + Plasma
 - **Real-time Notifications**: Configurable delivery of results  
 - **Zero code-changes**: Complex async processing hidden behind simple configuration
+- **OpenTelemetry**: This sample also shows how to easily enable OpenTelemetry to get end-to-end traces, even across Warp and Warp.Plasma
 
 This shows how Warp Gateway can transform any synchronous API into a modern asynchronous system with minimal configuration.
