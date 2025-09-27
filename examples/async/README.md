@@ -42,22 +42,12 @@ The key insight: synchronous API calls are transformed into asynchronous jobs wi
 
 ## Quick Start
 
-**Option 1: VS Code (Recommended)**
+**VS Code (Recommended)**
 1. Open Run and Debug panel
-2. Select "Async Chat Demo"
+2. Select "Warp Async API"
 3. Click Run
 4. Visit http://localhost:8000
 
-**Option 2: Manual**
-```bash
-# Start Plasma (background job processor)
-export WARP_CONFIG_BASE_DIR=./examples/async
-dotnet run --project warp.plasma
-
-# In another terminal - start chat server
-cd examples/async/chat
-pip install -r requirements.txt
-python main.py
 ```
 
 ## Running the Example
@@ -66,10 +56,10 @@ python main.py
 
 **VS Code Compound Launch:**
 1. Open "Run and Debug" panel in VS Code
-2. Select "Async Chat Demo" from dropdown  
+2. Select "Warp Async API" from dropdown  
 3. Click play button
 
-This starts both Warp Plasma and the Memory Alpha chat interface at http://localhost:8000
+This starts Warp, Warp.Plasma and the Memory Alpha chat interface at http://localhost:8000
 Then visit http://localhost:8000 and chat with Memory Alpha!
 
 ## Example Configuration

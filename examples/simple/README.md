@@ -15,7 +15,7 @@ The `warp.yml` file in this directory configures:
 
 ## Running the Example
 
-1. **Start the gateway** using the **"Warp (simple)"** launch configuration in VS Code (F5 or Run & Debug panel)
+1. **Start the gateway** using the **"Warp Simple"** launch configuration in VS Code (F5 or Run & Debug panel)
 2. **Test the API** with curl:
 
    ```bash

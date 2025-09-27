@@ -15,11 +15,9 @@ This example includes:
 
 ## Running the Example
 
-1. **Start the services** using the **"Warp API Gateway"** compound launch configuration in VS Code, which starts:
+1. **Start the services** using the **"Warp JWT & APIKeys"** compound launch configuration in VS Code, which starts:
    - Warp Gateway (port 5000)
    - Developer API (port 5002) 
-
-   Or run individual services with their respective launch configurations.
 
 ## Authentication Methods
 

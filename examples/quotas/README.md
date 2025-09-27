@@ -19,12 +19,12 @@ This example includes:
 
 ## Running the Example
 
-1. **Start the services** using the **"Warp API Gateway"** compound launch configuration in VS Code, which starts:
+### Step 1: Launch all required executables
+
+**Start the services** using the **"Warp Permissions & Quotas"** compound launch configuration in VS Code, which starts:
    - Warp Gateway (port 5000)
    - Developer API (port 5002) 
    - Admin API (port 5003)
-
-   Or run individual services with their respective launch configurations.
 
 ## Getting an API Key
 

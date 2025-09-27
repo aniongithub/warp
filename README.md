@@ -38,7 +38,7 @@ This architecture allows us to put Warp together in a variety of ways with pure 
 
 - **[Simple](examples/simple/README.md)** - Minimal API Gateway configuration with basic rate limiting and OpenAPI validation
 - **[JWT/API Key auth & Developer API](examples/apikeys/README.md)** - JWT and/or API key authentication with developer portal key management
-- **[Quotas & Permissions](examples/quotas/README.md)** - Permission-based quota tracking with usage-monitoring.
+- **[Quotas & Permissions](examples/quotas/README.md)** - Flexible, permission-based quota tracking with usage-monitoring.
 - **[Async-ification of synchronous APIs](examples/async/README.md)** - Transform synchronous APIs to asynchronous job processing with real-time notifications and end-to-end OpenTelemetry tracking
 
 ## Persistence and Data Storage
