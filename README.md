@@ -18,6 +18,7 @@ Warp uses a declarative, config-driven middleware pipeline. Each route can speci
 
 - **Preprocess**: Runs before YARP transforms (auth, quota, rate limiting, etc.)
 - **Predispatch**: Runs before dispatching to the backend (e.g., OpenAPI validation)
+- **Postdispatch**: Runs after getting a result from the backend, but before sendind a response to the client (usage-monitoring)
 - **Postprocess**: Runs after backend response (logging, tracing, etc.)
 
 Middlewares are registered in `appsettings.json` under `PipelineComponents` and referenced by name in route metadata.
