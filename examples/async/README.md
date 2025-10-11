@@ -6,6 +6,8 @@ It also adds OpenTelemetry configuration to show end-to-end, unified traces for 
 
 ## Architecture Flow
 
+`warp` can be configured via middleware to dispatch incoming requests to a queue (and return 202), while `warp.plasma` waits for new tasks to arrive, then processes it using a configured, synchronous API and returns the result via the queue or other configured means like a webhook or push notification.
+
 ```mermaid
 sequenceDiagram
     participant User as User
@@ -20,7 +22,7 @@ sequenceDiagram
     Warp->>Redis: Enqueue job
     Warp->>Chat: Return jobId
     Chat->>User: Show "searching..." (WebSocket)
-    
+  
     Plasma->>Redis: Dequeue job
     Plasma->>API: Execute request
     API->>Plasma: Return result
@@ -28,7 +30,7 @@ sequenceDiagram
     Chat->>User: Display answer (WebSocket)
 ```
 
-The key insight: synchronous API calls are transformed into asynchronous jobs with real-time result delivery via configurable delivery mechanisms without any change to our APIs!
+Now synchronous API implementations are transformed into asynchronous jobs with real-time result delivery via configurable delivery mechanisms without any change to our implementation!
 
 ## Files in this Example
 
@@ -43,6 +45,7 @@ The key insight: synchronous API calls are transformed into asynchronous jobs wi
 ## Quick Start
 
 **VS Code (Recommended)**
+
 1. Open Run and Debug panel
 2. Select "Warp Async API"
 3. Click Run
@@ -79,6 +82,7 @@ Jobs:
 ```
 
 **warp.yml** - Gateway with async routes:
+
 ```yaml
 Routes:
   - Path: "/examples/async/jobs/memoryalpha/rag/ask"
@@ -88,6 +92,7 @@ Routes:
 ```
 
 **chat/main.py** - FastAPI server (~100 lines total):
+
 - WebSocket endpoint for real-time updates
 - Webhook receiver for job completion
 - Simple HTML chat interface
@@ -96,7 +101,7 @@ Routes:
 
 - **Sync to Async Transformation**: Any synchronous API becomes asynchronous with no changes
 - **Job Queueing and Processing**: Configurable, transparent job queueing and processing with Warp + Plasma
-- **Real-time Notifications**: Configurable delivery of results  
+- **Real-time Notifications**: Configurable delivery of results
 - **Zero code-changes**: Complex async processing hidden behind simple configuration
 - **OpenTelemetry**: This sample also shows how to easily enable OpenTelemetry to get end-to-end traces, even across Warp and Warp.Plasma
 
