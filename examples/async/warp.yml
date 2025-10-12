@@ -12,7 +12,7 @@ ReverseProxy:
       Destinations:
         memoryalpha:
           # We can use an environment variable to configure the service address
-          Address: ${MEMORYALPHA_RAG_API_ADDR}
+          Address: ${MEMORYALPHA_RAG_API_ADDR:http://memoryalpha-rag-api:8000}
 
   Routes:
     # Asynchronous API route - handles all async operations (submit, status, result, cancel)
@@ -47,8 +47,7 @@ ReverseProxy:
           # Handle all async operations (submit, status, result, cancel)
           - Type: "Warp.Dilithium.Middleware.RedisAsyncApiHandler, warp.dilithium"
             Options:
-              ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379}"
-              DatabaseIndex: 0
+              ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379,defaultDatabase=0}"
               Channel: "memoryalpha_async"
               MaxConcurrentDispatches: 10
               DispatchTimeoutMs: 30000

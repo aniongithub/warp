@@ -13,8 +13,7 @@ Jobs:
     Context:
       Type: "Warp.Core.Job.Contexts.RedisJobContext, warp.core"
       Options:
-        ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379}"
-        Database: 0
+        ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379,defaultDatabase=0}"
         Channel: "memoryalpha_async"
     Delivery:
       Type: "Warp.Core.Job.Delivery.WebhookResultDelivery, warp.core"
@@ -30,8 +29,7 @@ Jobs:
 HttpTimeoutMs: 60000 # 1 minute
 
 Redis:
-  ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379}"
-  Database: 0
+  ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379,defaultDatabase=0}"
 
 # Job processor behavior
 Processor:

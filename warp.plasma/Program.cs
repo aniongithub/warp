@@ -297,56 +297,23 @@ internal sealed class EPS
             // Get the configuration section for this job's context options
             var contextOptionsSection = _configuration.GetSection($"Jobs:{jobName}:Context:Options");
 
-            // Use reflection to determine constructor parameters
-            var constructor = type.GetConstructors().FirstOrDefault();
-            if (constructor == null)
+            // Create instance using parameterless constructor
+            var instance = Activator.CreateInstance(type);
+            if (instance is not IJobContext jobContext)
             {
-                throw new InvalidOperationException($"No constructor found for job context type: {contextType}");
+                throw new InvalidOperationException($"Failed to create instance of {contextType}");
             }
 
-            var parameters = constructor.GetParameters();
-            var args = new object[parameters.Length];
+            // Get connection string and channel for initialization
+            var connectionString = contextOptionsSection["ConnectionString"] ?? 
+                                 _configuration.GetConnectionString("Redis") ?? 
+                                 "redis:6379,defaultDatabase=0";
+            var channel = contextOptionsSection["Channel"] ?? jobName;
 
-            for (int i = 0; i < parameters.Length; i++)
-            {
-                var param = parameters[i];
-                var paramName = param.Name;
+            // Initialize the job context using the new pattern
+            jobContext.Initialize(connectionString, channel);
 
-                if (paramName != null)
-                {
-                    var configValue = contextOptionsSection[paramName];
-                    if (configValue != null)
-                    {
-                        // Convert the value to the expected parameter type
-                        args[i] = param.ParameterType == typeof(int) 
-                            ? Convert.ToInt32(configValue) 
-                            : configValue.ToString() ?? "";
-                    }
-                    else
-                    {
-                        // Provide default values for common parameter names
-                        args[i] = paramName switch
-                        {
-                            "channel" => contextOptionsSection["Channel"] ?? "default",
-                            "connectionString" => contextOptionsSection["ConnectionString"] ?? "localhost:6379",
-                            "database" or "dbIndex" => Convert.ToInt32(contextOptionsSection["Database"] ?? "0"),
-                            _ => param.HasDefaultValue ? param.DefaultValue! : 
-                                 param.ParameterType.IsValueType ? Activator.CreateInstance(param.ParameterType)! : 
-                                 throw new InvalidOperationException($"Cannot resolve parameter {paramName} for job context {contextType}")
-                        };
-                    }
-                }
-                else
-                {
-                    // No options provided, use defaults
-                    args[i] = param.HasDefaultValue ? param.DefaultValue! : 
-                             param.ParameterType.IsValueType ? Activator.CreateInstance(param.ParameterType)! : 
-                             throw new InvalidOperationException($"Cannot resolve parameter {paramName} for job context {contextType}");
-                }
-            }
-
-            var instance = Activator.CreateInstance(type, args);
-            return (IJobContext)(instance ?? throw new InvalidOperationException($"Failed to create instance of {contextType}"));
+            return jobContext;
         }
         catch (Exception ex)
         {

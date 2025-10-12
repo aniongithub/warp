@@ -106,9 +106,7 @@
             "program": "${workspaceFolder}/warp/bin/Debug/net9.0/warp.dll",
             "justMyCode": false,
             "env": {
-                "MEMORYALPHA_RAG_API_ADDR": "http://memoryalpha-rag-api:8000",
                 "WARP_CONFIG_BASE_DIR": "./examples/async", // This is all we need to configure
-                "REDIS_CONNECTION_STRING": "redis:6379"
             },
             "presentation": {
                 "hidden": true
