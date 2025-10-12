@@ -35,6 +35,7 @@ public abstract class JobContextBase : IJobContext
         => JsonSerializer.Deserialize<T>(jobData, _jsonOptions)!;
 
     // Abstract methods that concrete implementations must provide
+    public abstract void Initialize(string connectionString, string channel);
     public abstract IJob CreateJob();
     public abstract Task EnqueueJobAsync<T>(T job) where T : class, IJob;
     public abstract Task<DequeueResult<T>> DequeueJobAsync<T>() where T : class, IJob;

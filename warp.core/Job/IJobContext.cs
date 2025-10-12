@@ -16,6 +16,7 @@ public class DequeueResult<T> where T : class, IJob
 
 public interface IJobContext
 {
+    void Initialize(string connectionString, string channel);
     IJob CreateJob();
     Task EnqueueJobAsync<T>(T job) where T : class, IJob;
     Task<DequeueResult<T>> DequeueJobAsync<T>() where T : class, IJob;
