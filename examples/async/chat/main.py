@@ -45,6 +45,12 @@ async def ask_question(request: QuestionRequest):
             headers={"X-JWT-Email": "demo@memoryalpha.local"}
         )
         
+    # Check if the request was successful
+    if response.status_code != 200:
+        # Propagate the error response from Warp Gateway
+        from fastapi import HTTPException
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+        
     return {"status": "submitted"}
 
 @app.post("/webhook")

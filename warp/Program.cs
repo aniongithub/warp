@@ -31,7 +31,7 @@ builder.Services.AddSingleton<Yarp.ReverseProxy.Forwarder.IPostTransformMiddlewa
     var logger = serviceProvider.GetRequiredService<ILoggerFactory>().CreateLogger<PostTransformMiddlewareRunner>();
     
     // Create middleware cache on-demand
-    var middlewareCache = new Dictionary<string, List<Func<HttpContext, Func<Task>, Task>>>();
+    var middlewareCache = new Dictionary<string, List<Func<HttpContext, Func<Task>, Task<bool>>>>();
     foreach (var route in routesSection.GetChildren())
     {
         var routeId = route.Key;
@@ -81,7 +81,7 @@ app.UseRequestTimeouts();
 var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
 
 // Pre-build and cache middleware for each route and phase
-var middlewareCache = new Dictionary<string, List<Func<HttpContext, Func<Task>, Task>>>();
+var middlewareCache = new Dictionary<string, List<Func<HttpContext, Func<Task>, Task<bool>>>>();
 foreach (var route in routesSection.GetChildren())
 {
     var routeId = route.Key;
@@ -177,7 +177,12 @@ app.MapReverseProxy(proxyPipeline =>
         {
             foreach (var middlewareFunction in preprocessMiddleware)
             {
-                await middlewareFunction(context, () => Task.CompletedTask);
+                var shouldContinue = await middlewareFunction(context, () => Task.CompletedTask);
+                if (!shouldContinue)
+                {
+                    // Middleware has handled the response, stop pipeline
+                    return;
+                }
             }
         }
         
@@ -199,7 +204,12 @@ app.MapReverseProxy(proxyPipeline =>
         {
             foreach (var middlewareFunction in postdispatchMiddleware)
             {
-                await middlewareFunction(context, () => Task.CompletedTask);
+                var shouldContinue = await middlewareFunction(context, () => Task.CompletedTask);
+                if (!shouldContinue)
+                {
+                    // Middleware has handled the response, stop pipeline
+                    break;
+                }
             }
         }
     });
@@ -216,7 +226,12 @@ app.MapReverseProxy(proxyPipeline =>
         {
             foreach (var middlewareFunction in postprocessMiddleware)
             {
-                await middlewareFunction(context, () => Task.CompletedTask);
+                var shouldContinue = await middlewareFunction(context, () => Task.CompletedTask);
+                if (!shouldContinue)
+                {
+                    // Middleware has handled the response, stop pipeline
+                    break;
+                }
             }
         }
     });

@@ -2,11 +2,11 @@ using Yarp.ReverseProxy.Forwarder;
 
 public class PostTransformMiddlewareRunner : IPostTransformMiddleware
 {
-    private readonly Dictionary<string, List<Func<HttpContext, Func<Task>, Task>>> _middlewareCache;
+    private readonly Dictionary<string, List<Func<HttpContext, Func<Task>, Task<bool>>>> _middlewareCache;
     private readonly ILogger<PostTransformMiddlewareRunner> _logger;
 
     public PostTransformMiddlewareRunner(
-        Dictionary<string, List<Func<HttpContext, Func<Task>, Task>>> middlewareCache,
+        Dictionary<string, List<Func<HttpContext, Func<Task>, Task<bool>>>> middlewareCache,
         ILogger<PostTransformMiddlewareRunner> logger)
     {
         _middlewareCache = middlewareCache;
@@ -46,7 +46,13 @@ public class PostTransformMiddlewareRunner : IPostTransformMiddleware
         // Execute cached middleware functions
         foreach (var middlewareFunction in predispatchMiddleware)
         {
-            await middlewareFunction(context, () => Task.CompletedTask);
+            var shouldContinue = await middlewareFunction(context, () => Task.CompletedTask);
+            if (!shouldContinue)
+            {
+                // Middleware has handled the response, this will short-circuit YARP
+                _logger.LogDebug("PREDISPATCH middleware stopped pipeline for route {RouteId}", routeId);
+                break;
+            }
         }
     }
 

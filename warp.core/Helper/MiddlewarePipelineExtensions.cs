@@ -18,7 +18,7 @@ public static class MiddlewarePipelineExtensions
     /// <param name="serviceProvider">Service provider for dependency injection</param>
     /// <param name="namePrefix">Prefix for middleware instance names (for uniqueness)</param>
     /// <returns>A list of middleware functions</returns>
-    public static List<Func<HttpContext, Func<Task>, Task>> CreateMiddlewareFromConfig(
+    public static List<Func<HttpContext, Func<Task>, Task<bool>>> CreateMiddlewareFromConfig(
         IConfigurationSection middlewareSection,
         IServiceProvider serviceProvider,
         string namePrefix = "middleware")
@@ -27,7 +27,7 @@ public static class MiddlewarePipelineExtensions
         var logger = loggerFactory.CreateLogger("MiddlewarePipelineExtensions");
         var dataContext = serviceProvider.GetRequiredService<IDataContext>();
         
-        var middlewareFunctions = new List<Func<HttpContext, Func<Task>, Task>>();
+        var middlewareFunctions = new List<Func<HttpContext, Func<Task>, Task<bool>>>();
         
         // Parse middleware array from configuration
         var middlewareArray = middlewareSection.Get<object[]>();
@@ -86,14 +86,18 @@ public static class MiddlewarePipelineExtensions
                 var middleware = ActivatorUtilities.CreateInstance(serviceProvider, type, middlewareName, middlewareLogger, dataContext, configInstance)
                     ?? throw new Exception($"Could not create middleware {middlewareName}");
                 
-                // Create middleware function
+                // Create middleware function that returns whether pipeline should continue
                 middlewareFunctions.Add(async (context, next) =>
                 {
                     var method = type.GetMethod("InvokeWithTracingAsync");
-                    var task = method?.Invoke(middleware, new object[] { context, new RequestDelegate(_ => next()) }) as Task;
+                    var task = method?.Invoke(middleware, new object[] { context, new RequestDelegate(_ => next()) }) as Task<IResult>;
                     if (task == null)
-                        throw new InvalidOperationException($"{middlewareName} did not return a valid Task");
-                    await task;
+                        throw new InvalidOperationException($"{middlewareName} did not return a valid Task<IResult>");
+                    
+                    var result = await task;
+                    
+                    // Return whether pipeline should continue
+                    return result is Result warpResult && warpResult.Action == PipelineAction.Continue;
                 });
                 
                 logger.LogInformation("Successfully created middleware: {Name}", middlewareName);

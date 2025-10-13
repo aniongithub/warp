@@ -116,7 +116,7 @@ internal sealed class EPS
     private List<JobConfiguration> _jobConfigurations = new();
     private readonly CancellationTokenSource _cancellationTokenSource = new();
     private readonly ActivitySource _activitySource;
-    private readonly Dictionary<string, List<Func<HttpContext, Func<Task>, Task>>> _middlewareCache = new();
+    private readonly Dictionary<string, List<Func<HttpContext, Func<Task>, Task<bool>>>> _middlewareCache = new();
 
     public EPS(ILogger<EPS> logger, IConfiguration configuration, HttpClient httpClient, IServiceProvider serviceProvider, string sourceName)
     {
@@ -442,20 +442,13 @@ internal sealed class EPS
                 
                 foreach (var middlewareFunction in predispatchMiddleware)
                 {
-                    await middlewareFunction(httpContext, () => Task.CompletedTask);
+                    var shouldContinue = await middlewareFunction(httpContext, () => Task.CompletedTask);
+                    if (!shouldContinue)
+                    {
+                        _logger.LogInformation("Predispatch middleware stopped pipeline for job: {JobId}", job.Id);
+                        return; // Short-circuit the entire job execution
+                    }
                 }
-            }
-            
-            // Check if any Predispatch middleware set an error status - if so, short-circuit the pipeline
-            if (httpContext.Response.StatusCode >= 400)
-            {
-                _logger.LogWarning("Predispatch middleware set error status {StatusCode} for job {JobId}, skipping HTTP call and Postdispatch", 
-                    httpContext.Response.StatusCode, job.Id);
-                
-                // Update job status based on the error response
-                var errorMessage = $"Predispatch middleware failed with HTTP {httpContext.Response.StatusCode}";
-                await jobContext.UpdateJobAsync(job, JobStatus.Failed, error: errorMessage);
-                return; // Short-circuit: don't execute HTTP call or Postdispatch middleware
             }
             
             // Execute the actual job (HTTP call to downstream service)
@@ -469,7 +462,12 @@ internal sealed class EPS
                 
                 foreach (var middlewareFunction in postdispatchMiddleware)
                 {
-                    await middlewareFunction(httpContext, () => Task.CompletedTask);
+                    var shouldContinue = await middlewareFunction(httpContext, () => Task.CompletedTask);
+                    if (!shouldContinue)
+                    {
+                        _logger.LogInformation("Postdispatch middleware stopped pipeline for job: {JobId}", job.Id);
+                        break; // Stop executing further postdispatch middleware
+                    }
                 }
             }
         }

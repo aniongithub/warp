@@ -17,7 +17,7 @@ public class MiddlewareOptions
 public interface IWarpMiddleware
 {
     string Name { get; }
-    Task InvokeWithTracingAsync(HttpContext context, RequestDelegate next);
+    Task<IResult> InvokeWithTracingAsync(HttpContext context, RequestDelegate next);
 }
 
 public abstract class MiddlewareBase<TOptions> : IWarpMiddleware
@@ -86,12 +86,12 @@ public abstract class MiddlewareBase<TOptions> : IWarpMiddleware
         return "Sync";
     }
 
-    public async Task InvokeWithTracingAsync(HttpContext context, RequestDelegate next)
+    public async Task<IResult> InvokeWithTracingAsync(HttpContext context, RequestDelegate next)
     {
         if (!ShouldApplyToRequest(context))
         {
             await next(context);
-            return;
+            return Results.Ok().Continue(); // Continue pipeline since we didn't apply
         }
 
         using var activity = ActivitySource.StartActivity($"Middleware.{Name}");
@@ -109,6 +109,9 @@ public abstract class MiddlewareBase<TOptions> : IWarpMiddleware
         }
         
         activity?.SetTag("response.status_code", context.Response.StatusCode);
+        
+        // Return the result so the caller can inspect Continue/Stop decision
+        return result;
     }
 
     /// <summary>
@@ -124,13 +127,6 @@ public abstract class MiddlewareBase<TOptions> : IWarpMiddleware
         return Task.FromResult<IResult>(Results.Empty.Continue());
     }
 
-    [Obsolete("Use ProcessAsync instead. This method will be removed in a future version.")]
-    protected virtual Task InvokeAsync(HttpContext context, RequestDelegate next)
-    {
-        // Legacy support - calls ProcessAsync and handles result
-        var result = ProcessAsync(context).GetAwaiter().GetResult();
-        return result.ExecuteAsync(context);
-    }
 
     public string Name { get; }
 }
