@@ -75,10 +75,11 @@ Jobs:
   memoryalpha:
     MaxConcurrentJobs: 3
     PollingIntervalMs: 2000
-    Delivery:
-      Type: "Warp.Core.Job.Delivery.WebhookResultDelivery, warp.core"
-      Options:
-        WebhookUrl: "http://localhost:8000/webhook"
+    Metadata:
+      Postdispatch:
+        - Type: "Warp.Dilithium.Middleware.WebhookDelivery, warp.dilithium"
+          Options:
+            WebhookUrl: "http://localhost:8000/webhook"
 ```
 
 **warp.yml** - Gateway with async routes:

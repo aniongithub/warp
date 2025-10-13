@@ -1,7 +1,6 @@
 using OpenTelemetry.Trace;
 using OpenTelemetry.Resources;
 using Warp.Core.Data;
-using Warp.Core.Middleware;
 using Warp.Core.Helper;
 using System.Diagnostics;
 
@@ -17,183 +16,112 @@ var dataContext = config.GetSection("DataContext").CreateFromConfiguration();
 builder.Services.AddSingleton(dataContext);
 builder.Services.AddRequestTimeouts();
 
-// Load inline middleware definitions from routes
+// Load inline middleware definitions from routes - will cache them after app is built
 var routesSection = config.GetSection("ReverseProxy:Routes");
-var pipelineComponents = new List<MiddlewareDescriptor>();
-var routePhaseOverrides = new Dictionary<string, Dictionary<string, string>>(); // routeId -> phase -> middleware list
-foreach (var routeSection in routesSection.GetChildren())
-{
-    var routeId = routeSection.Key;
-    var metadataSection = routeSection.GetSection("Metadata");
-    
-    foreach (var phaseSection in metadataSection.GetChildren())
-    {
-        var phaseName = phaseSection.Key;
-        if (phaseName is "Preprocess" or "Predispatch" or "Postdispatch" or "Postprocess")
-        {
-            // Check if this phase has inline middleware definitions (array format)
-            var middlewareArray = phaseSection.Get<object[]>();
-            if (middlewareArray != null && middlewareArray.Length > 0)
-            {
-                var middlewareNames = new List<string>();
-                
-                for (int i = 0; i < middlewareArray.Length; i++)
-                {
-                    var middlewareConfig = phaseSection.GetSection($"{i}");
-                    var middlewareType = middlewareConfig.GetValue<string>("Type");
-                    
-                    if (!string.IsNullOrEmpty(middlewareType))
-                    {
-                        // Generate a unique name for this middleware instance
-                        var middlewareName = $"{routeId}_{phaseName}_{i}_{middlewareType.Split('.').Last().Split(',').First()}";
-                        
-                        var descriptor = new MiddlewareDescriptor
-                        {
-                            Name = middlewareName,
-                            Type = middlewareType,
-                            Options = middlewareConfig.GetSection("Options")
-                        };
-                        
-                        pipelineComponents.Add(descriptor);
-                        middlewareNames.Add(middlewareName);
-                    }
-                }
-                
-                // Store the override for this route and phase
-                if (middlewareNames.Count > 0)
-                {
-                    if (!routePhaseOverrides.ContainsKey(routeId))
-                        routePhaseOverrides[routeId] = new Dictionary<string, string>();
-                    
-                    routePhaseOverrides[routeId][phaseName] = string.Join(",", middlewareNames);
-                }
-            }
-        }
-    }
-}
 
 // Register YARP reverse proxy from config
 builder.Services
     .AddReverseProxy()
     .LoadFromConfig(config.GetSection("ReverseProxy"));
 
-// Build a map of pipeline components (declare before using block)
-var componentMap = new Dictionary<string, Func<RequestDelegate, RequestDelegate>>();
-// Build a temporary service provider for setup
-#pragma warning disable ASP0000 // We need to do this to resolve middleware types before app build
-using (var tempProvider = builder.Services.BuildServiceProvider())
+// Register PostTransformMiddlewareRunner for YARP post-transform (predispatch) extensibility
+// We use a factory approach since we need the middleware cache which is built later
+builder.Services.AddSingleton<Yarp.ReverseProxy.Forwarder.IPostTransformMiddleware>(serviceProvider =>
 {
-    var tempLoggerFactory = tempProvider.GetRequiredService<ILoggerFactory>();
-    var tempLogger = tempLoggerFactory.CreateLogger("Startup");
-
-    // Populate componentMap
-    foreach (var descriptor in pipelineComponents)
+    var logger = serviceProvider.GetRequiredService<ILoggerFactory>().CreateLogger<PostTransformMiddlewareRunner>();
+    
+    // Create middleware cache on-demand
+    var middlewareCache = new Dictionary<string, List<Func<HttpContext, Func<Task>, Task>>>();
+    foreach (var route in routesSection.GetChildren())
     {
-        tempLogger.LogInformation("Registering middleware: {Name} ({Type})", descriptor.Name, descriptor.Type);
-        try
+        var routeId = route.Key;
+        var predispatchSection = route.GetSection("Metadata:Predispatch");
+        if (predispatchSection.Exists())
         {
-            tempLogger.LogDebug("Resolving middleware type: {Type}", descriptor.Type);
-            var middlewareType = descriptor.Type.ResolveType()
-                ?? throw new Exception($"Could not find middleware type: {descriptor.Type}");
-            tempLogger.LogDebug("Checking inheritance chain for middleware: {MiddlewareType}", middlewareType.FullName);
-            
-            // Find the MiddlewareBase<> in the inheritance chain so we can get the options type
-            var configBaseType = middlewareType.GetMiddlewareBaseType();
-            
-            if (configBaseType == null)
-                throw new Exception($"Middleware type {middlewareType.FullName} does not inherit from MiddlewareBase<>.");
-            
-            tempLogger.LogDebug("Resolving configuration type for middleware: {MiddlewareType}", middlewareType.FullName);
-            var configType = configBaseType.GetGenericArguments()[0];
-            var configInstance = Activator.CreateInstance(configType);
-
-
-            if (descriptor.Options != null)
-            {
-                tempLogger.LogDebug("Binding options for middleware: {Name}", descriptor.Name);
-                descriptor.Options.Bind(configInstance); // Assuming Options is IConfigurationSection
-            }
-            if (configInstance == null)
-            {
-                tempLogger.LogError("Configuration instance for middleware {Name} is null.", descriptor.Name);
-                throw new Exception($"Configuration instance for middleware {descriptor.Name} is null.");
-            }
-
-            tempLogger.LogDebug("Creating middleware instance for: {Name}", descriptor.Name);
-            var loggerInstance = tempLoggerFactory.CreateLogger(descriptor.Name);
-            var middleware = ActivatorUtilities.CreateInstance(tempProvider, middlewareType, descriptor.Name, loggerInstance, dataContext!, configInstance)
-                ?? throw new Exception($"Could not create middleware {descriptor.Name}");
-            tempLogger.LogInformation("Successfully registered middleware: {Name}", descriptor.Name);
-            componentMap[descriptor.Name] = next => async context =>
-            {
-                var method = middlewareType.GetMethod("InvokeWithTracingAsync");
-                var task = method?.Invoke(middleware, new object[] { context, next }) as Task;
-                if (task == null)
-                    throw new InvalidOperationException($"{descriptor.Name} did not return a valid Task");
-                await task;
-            };
-        }
-        catch (Exception)
-        {
-            tempLogger.LogError("Failed to register middleware: {Name} ({Type})", descriptor.Name, descriptor.Type);
-            throw;
+            middlewareCache[$"{routeId}_predispatch"] = 
+                Warp.Core.Extensions.MiddlewarePipelineExtensions.CreateMiddlewareFromConfig(
+                    predispatchSection, serviceProvider, $"{routeId}_predispatch");
         }
     }
+    
+    return new PostTransformMiddlewareRunner(middlewareCache, logger);
+});
 
-    // Always configure OpenTelemetry for unified tracing
-    tempLogger.LogInformation("Configuring OpenTelemetry for unified tracing...");
+// Always configure OpenTelemetry for unified tracing
+var tempLogger = LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger("Startup");
+tempLogger.LogInformation("Configuring OpenTelemetry for unified tracing...");
 
-    // Ensure we use the correct config object, not builder.Configuration
-    var otelSection = config.GetSection("OpenTelemetry");
+var otelSection = config.GetSection("OpenTelemetry");
+var sourceNames = otelSection.GetSection("SourceNames").Get<string[]>() ?? new[] { "Warp" };
+var otelEndpoint = otelSection.GetValue<string>("Endpoint") ?? "http://localhost:4317";
+var serviceName = otelSection.GetValue<string>("ServiceName") ?? "Warp";
 
-    var sourceNames = otelSection.GetSection("SourceNames").Get<string[]>() ?? new[] { "Warp" };
-    var otelEndpoint = otelSection.GetValue<string>("Endpoint") ?? "http://localhost:4317";
-    var serviceName = otelSection.GetValue<string>("ServiceName") ?? "Warp";
-
-    builder.Services.AddOpenTelemetry().WithTracing(tracer =>
-    {
-        tracer
-            .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(serviceName))
-            .AddAspNetCoreInstrumentation(options =>
-                options.EnrichWithHttpResponse = (activity, response) =>
-                    activity.SetStatus(response?.StatusCode.IsErrorStatus() == true
-                        ? ActivityStatusCode.Error
-                        : ActivityStatusCode.Ok,
-                        response != null
-                            ? $"HTTP {response.StatusCode.GetStatusDescription()}"
-                            : string.Empty))
-            .AddSource(sourceNames)
-            .AddConsoleExporter() // For hierarchical console logging
-            .AddOtlpExporter(otlp => otlp.Endpoint = new Uri(otelEndpoint)) // For Jaeger/external tools
-            .AddHttpClientInstrumentation();
-    });
-        
-    // Register PostTransformMiddlewareRunner for YARP post-transform (predispatch) extensibility
-    builder.Services.AddSingleton<Yarp.ReverseProxy.Forwarder.IPostTransformMiddleware>(
-        sp => new PostTransformMiddlewareRunner(componentMap, routePhaseOverrides, sp.GetRequiredService<ILoggerFactory>().CreateLogger<PostTransformMiddlewareRunner>())
-    );
-}
-#pragma warning restore ASP0000 // Do not call 'IServiceCollection.BuildServiceProvider' in 'ConfigureServices'
-
-// Helper method to extract middleware names from route phase overrides
-static string[] GetMiddlewareNames(IReadOnlyDictionary<string, string>? metadata, string phaseName, Dictionary<string, Dictionary<string, string>> routePhaseOverrides, string? routeId = null)
+builder.Services.AddOpenTelemetry().WithTracing(tracer =>
 {
-    // Only check route-specific overrides since we no longer support global metadata
-    if (!string.IsNullOrEmpty(routeId) && 
-        routePhaseOverrides.TryGetValue(routeId, out var phaseOverrides) &&
-        phaseOverrides.TryGetValue(phaseName, out var overrideValue))
-    {
-        return overrideValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    }
-
-    return Array.Empty<string>();
-}
+    tracer
+        .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(serviceName))
+        .AddAspNetCoreInstrumentation(options =>
+            options.EnrichWithHttpResponse = (activity, response) =>
+                activity.SetStatus(response?.StatusCode.IsErrorStatus() == true
+                    ? ActivityStatusCode.Error
+                    : ActivityStatusCode.Ok,
+                    response != null
+                        ? $"HTTP {response.StatusCode.GetStatusDescription()}"
+                        : string.Empty))
+        .AddSource(sourceNames)
+        .AddConsoleExporter() // For hierarchical console logging
+        .AddOtlpExporter(otlp => otlp.Endpoint = new Uri(otelEndpoint)) // For Jaeger/external tools
+        .AddHttpClientInstrumentation();
+});
 
 // Now build the app
 var app = builder.Build();
 app.UseRequestTimeouts();
 
 var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+
+// Pre-build and cache middleware for each route and phase
+var middlewareCache = new Dictionary<string, List<Func<HttpContext, Func<Task>, Task>>>();
+foreach (var route in routesSection.GetChildren())
+{
+    var routeId = route.Key;
+    
+    // Cache Preprocess middleware
+    var preprocessSection = route.GetSection("Metadata:Preprocess");
+    if (preprocessSection.Exists())
+    {
+        middlewareCache[$"{routeId}_preprocess"] = 
+            Warp.Core.Extensions.MiddlewarePipelineExtensions.CreateMiddlewareFromConfig(
+                preprocessSection, app.Services, $"{routeId}_preprocess");
+    }
+    
+    // Cache Predispatch middleware
+    var predispatchSection = route.GetSection("Metadata:Predispatch");
+    if (predispatchSection.Exists())
+    {
+        middlewareCache[$"{routeId}_predispatch"] = 
+            Warp.Core.Extensions.MiddlewarePipelineExtensions.CreateMiddlewareFromConfig(
+                predispatchSection, app.Services, $"{routeId}_predispatch");
+    }
+    
+    // Cache Postdispatch middleware
+    var postdispatchSection = route.GetSection("Metadata:Postdispatch");
+    if (postdispatchSection.Exists())
+    {
+        middlewareCache[$"{routeId}_postdispatch"] = 
+            Warp.Core.Extensions.MiddlewarePipelineExtensions.CreateMiddlewareFromConfig(
+                postdispatchSection, app.Services, $"{routeId}_postdispatch");
+    }
+    
+    // Cache Postprocess middleware
+    var postprocessSection = route.GetSection("Metadata:Postprocess");
+    if (postprocessSection.Exists())
+    {
+        middlewareCache[$"{routeId}_postprocess"] = 
+            Warp.Core.Extensions.MiddlewarePipelineExtensions.CreateMiddlewareFromConfig(
+                postprocessSection, app.Services, $"{routeId}_postprocess");
+    }
+}
 
 // Configure CORS only if explicitly configured - no insecure defaults
 var corsSection = config.GetSection("Cors");
@@ -236,73 +164,43 @@ else
     logger.LogInformation("No CORS configuration found - CORS not enabled");
 }
 
-// YARP per-route middleware using MapReverseProxy
+// YARP per-route middleware using MapReverseProxy with extension methods
 app.MapReverseProxy(proxyPipeline =>
 {
     // PREPROCESS: runs before YARP transforms
     proxyPipeline.Use(async (context, next) =>
     {
         var proxyFeature = context.Features.Get<Yarp.ReverseProxy.Model.IReverseProxyFeature>();
-        var metadata = proxyFeature?.Route?.Config?.Metadata;
         var routeId = proxyFeature?.Route?.Config?.RouteId;
-        var preprocess = GetMiddlewareNames(metadata, "Preprocess", routePhaseOverrides, routeId);
-        foreach (var name in preprocess.Reverse())
+        
+        if (!string.IsNullOrEmpty(routeId) && middlewareCache.TryGetValue($"{routeId}_preprocess", out var preprocessMiddleware))
         {
-            if (componentMap.TryGetValue(name, out var middleware))
+            foreach (var middlewareFunction in preprocessMiddleware)
             {
-                var nextDelegate = next;
-                next = ctx => middleware(nextDelegate)(ctx);
+                await middlewareFunction(context, () => Task.CompletedTask);
             }
         }
+        
         await next(context);
     });
 
-    // PREDISPATCH: handled by IPostTransformMiddleware (PostTransformMiddlewareRunner)
-    // No manual block here; handled by YARP extensibility
+    // PREDISPATCH: handled by PostTransformMiddlewareRunner (registered as IPostTransformMiddleware)
 
     // POSTDISPATCH: runs after dispatch, before postprocess
     proxyPipeline.Use(async (context, next) =>
     {
-        var proxyFeature = context.Features.Get<Yarp.ReverseProxy.Model.IReverseProxyFeature>();
-        var metadata = proxyFeature?.Route?.Config?.Metadata;
-        var routeId = proxyFeature?.Route?.Config?.RouteId;
-        var postdispatch = GetMiddlewareNames(metadata, "Postdispatch", routePhaseOverrides, routeId);
+        // Call next first to get the response from the backend
+        await next();
         
-        if (postdispatch.Length == 0)
+        var proxyFeature = context.Features.Get<Yarp.ReverseProxy.Model.IReverseProxyFeature>();
+        var routeId = proxyFeature?.Route?.Config?.RouteId;
+        
+        if (!string.IsNullOrEmpty(routeId) && middlewareCache.TryGetValue($"{routeId}_postdispatch", out var postdispatchMiddleware))
         {
-            await next();
-            return;
-        }
-
-        // Intercept the response stream to allow middlewares to process the response
-        var originalBodyStream = context.Response.Body;
-        using var responseBody = new MemoryStream();
-        context.Response.Body = responseBody;
-
-        try
-        {
-            // Call next to get the response from the backend
-            await next();
-
-            // Reset stream position to read the response
-            responseBody.Seek(0, SeekOrigin.Begin);
-
-            // Now run postdispatch middlewares with the response available
-            foreach (var name in postdispatch)
+            foreach (var middlewareFunction in postdispatchMiddleware)
             {
-                if (componentMap.TryGetValue(name, out var middleware))
-                {
-                    await middleware(_ => Task.CompletedTask)(context);
-                }
+                await middlewareFunction(context, () => Task.CompletedTask);
             }
-
-            // Copy the response back to the original stream
-            responseBody.Seek(0, SeekOrigin.Begin);
-            await responseBody.CopyToAsync(originalBodyStream);
-        }
-        finally
-        {
-            context.Response.Body = originalBodyStream;
         }
     });
 
@@ -310,20 +208,21 @@ app.MapReverseProxy(proxyPipeline =>
     proxyPipeline.Use(async (context, next) =>
     {
         await next();
+        
         var proxyFeature = context.Features.Get<Yarp.ReverseProxy.Model.IReverseProxyFeature>();
-        var metadata = proxyFeature?.Route?.Config?.Metadata;
         var routeId = proxyFeature?.Route?.Config?.RouteId;
-        var postprocess = GetMiddlewareNames(metadata, "Postprocess", routePhaseOverrides, routeId);
-        foreach (var name in postprocess)
+        
+        if (!string.IsNullOrEmpty(routeId) && middlewareCache.TryGetValue($"{routeId}_postprocess", out var postprocessMiddleware))
         {
-            if (componentMap.TryGetValue(name, out var middleware))
+            foreach (var middlewareFunction in postprocessMiddleware)
             {
-                await middleware(_ => Task.CompletedTask)(context);
+                await middlewareFunction(context, () => Task.CompletedTask);
             }
         }
     });
 });
 
-logger.LogInformation("Warp startup complete. Ready to accept requests.");
+var appLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+appLogger.LogInformation("Warp startup complete. Ready to accept requests.");
 
 app.Run();

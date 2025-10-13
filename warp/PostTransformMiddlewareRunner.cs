@@ -2,17 +2,14 @@ using Yarp.ReverseProxy.Forwarder;
 
 public class PostTransformMiddlewareRunner : IPostTransformMiddleware
 {
-    private readonly IDictionary<string, Func<RequestDelegate, RequestDelegate>> _componentMap;
-    private readonly Dictionary<string, Dictionary<string, string>> _routePhaseOverrides;
+    private readonly Dictionary<string, List<Func<HttpContext, Func<Task>, Task>>> _middlewareCache;
     private readonly ILogger<PostTransformMiddlewareRunner> _logger;
 
     public PostTransformMiddlewareRunner(
-        IDictionary<string, Func<RequestDelegate, RequestDelegate>> componentMap,
-        Dictionary<string, Dictionary<string, string>> routePhaseOverrides,
+        Dictionary<string, List<Func<HttpContext, Func<Task>, Task>>> middlewareCache,
         ILogger<PostTransformMiddlewareRunner> logger)
     {
-        _componentMap = componentMap;
-        _routePhaseOverrides = routePhaseOverrides;
+        _middlewareCache = middlewareCache;
         _logger = logger;
     }
 
@@ -22,10 +19,13 @@ public class PostTransformMiddlewareRunner : IPostTransformMiddleware
         context.Items["RequestPath"] = context.Request.Path.Value ?? string.Empty;
 
         var proxyFeature = context.Features.Get<Yarp.ReverseProxy.Model.IReverseProxyFeature>();
-        var metadata = proxyFeature?.Route?.Config?.Metadata;
         var routeId = proxyFeature?.Route?.Config?.RouteId;
-        var predispatch = GetMiddlewareNames(metadata, "Predispatch", _routePhaseOverrides, routeId);
-        if (predispatch.Length == 0)
+        
+        if (string.IsNullOrEmpty(routeId))
+            return;
+
+        // Check if we have cached predispatch middleware for this route
+        if (!_middlewareCache.TryGetValue($"{routeId}_predispatch", out var predispatchMiddleware))
             return;
 
         var destUri = new Uri(proxyFeature?.ProxiedDestination?.Model?.Config?.Address ?? "/");
@@ -43,39 +43,12 @@ public class PostTransformMiddlewareRunner : IPostTransformMiddleware
         if (proxyRequest?.RequestUri != null)
             context.Items["RequestPath"] = normalizedPath;
 
-        // Compose the pipeline for this request
-        RequestDelegate terminal = _ => Task.CompletedTask;
-        var pipeline = terminal;
-        foreach (var name in predispatch.Reverse())
+        // Execute cached middleware functions
+        foreach (var middlewareFunction in predispatchMiddleware)
         {
-            if (_componentMap.TryGetValue(name, out var middleware))
-            {
-                var nextDelegate = pipeline;
-                pipeline = middleware(nextDelegate);
-            }
+            await middlewareFunction(context, () => Task.CompletedTask);
         }
-        await pipeline(context);
     }
 
-    private static string[] GetMiddlewareNames(IReadOnlyDictionary<string, string>? metadata, string phaseName, Dictionary<string, Dictionary<string, string>> routePhaseOverrides, string? routeId)
-    {
-        if (metadata == null)
-            return Array.Empty<string>();
 
-        // Check if we have a route-specific override
-        if (!string.IsNullOrEmpty(routeId) && 
-            routePhaseOverrides.TryGetValue(routeId, out var phaseOverrides) &&
-            phaseOverrides.TryGetValue(phaseName, out var overrideValue))
-        {
-            return overrideValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        }
-
-        // Fall back to standard metadata
-        if (metadata.TryGetValue(phaseName, out var phase))
-        {
-            return phase.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        }
-
-        return Array.Empty<string>();
-    }
 }

@@ -1,7 +1,9 @@
 # Warp Plasma Job Processor Configuration for Async Example
 
 # OpenTelemetry Configuration
-$include: "opentelemetry.yml"
+$include: 
+  - datacontext.yml
+  - opentelemetry.yml
 
 # Multi-consumer job configurations demonstrating different delivery mechanisms
 Jobs:
@@ -15,22 +17,34 @@ Jobs:
       Options:
         ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379,defaultDatabase=0}"
         Channel: "memoryalpha_async"
-    Delivery:
-      Type: "Warp.Core.Job.Delivery.WebhookResultDelivery, warp.core"
-      Options:
-        WebhookUrl: "${WEBHOOK_URL:http://localhost:8888/webhook}"
-        TimeoutSeconds: 30
-        MaxRetries: 3
-        RetryDelaySeconds: 5
-        Headers:
-          X-Source: "warp-plasma"
-          X-Job-Type: "memoryalpha_async"
+    Metadata:
+      Predispatch:
+        - Type: "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium"
+          Options:
+            QuotaName: "free_quota"
+            QuotaType: "prepaid" # Prepaid quota type means we set a fixed quota and decrement it
+            DefaultQuota: 5000 # Default quota for new users (5000 tokens until reset)
 
-HttpTimeoutMs: 60000 # 1 minute
+      Postdispatch:
+        - Type: "Warp.Dilithium.Middleware.JsonResponseToHeaderTransform, warp.dilithium"
+          Options:
+            Mappings:
+              - JqSelector: ".token_usage.total_tokens"
+                DestinationHeader: "X-Quota-Usage"
 
-Redis:
-  ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379,defaultDatabase=0}"
+        - Type: "Warp.Dilithium.Middleware.QuotaUpdater, warp.dilithium"
+          Options:
+            UsageHeader: "X-Quota-Usage" # Our API can return the actual usage in this header (defaults to 1.0 if not present)                
 
+        - Type: "Warp.Dilithium.Middleware.WebhookDelivery, warp.dilithium"
+          Options:
+            WebhookUrl: "${WEBHOOK_URL:http://localhost:8888/webhook}"
+            TimeoutSeconds: 30
+            MaxRetries: 3
+            RetryDelaySeconds: 5
+            Headers:
+              X-Source: "warp-plasma"
+              X-Job-Type: "memoryalpha_async"
 # Job processor behavior
 Processor:
   EnableHealthCheck: true
