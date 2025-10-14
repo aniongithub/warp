@@ -1,0 +1,54 @@
+# Warp Plasma Job Processor Configuration for Async Example
+
+# OpenTelemetry Configuration
+$include: 
+  - datacontext.yml
+  - opentelemetry.yml
+
+# Multi-consumer job configurations demonstrating different delivery mechanisms
+Jobs:
+  # MemoryAlpha job processing with webhook delivery
+  memoryalpha:
+    MaxConcurrentJobs: 3
+    PollingIntervalMs: 2000
+    Endpoint: "${MEMORYALPHA_RAG_API_ADDR:http://memoryalpha-rag-api:8000}"
+    Context:
+      Type: "Warp.Core.Job.Contexts.RedisJobContext, warp.core"
+      Options:
+        ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379,defaultDatabase=0}"
+        Channel: "memoryalpha_async"
+    Metadata:
+      Predispatch:
+        - Type: "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium"
+          Options:
+            QuotaName: "free_quota"
+            QuotaType: "prepaid" # Prepaid quota type means we set a fixed quota and decrement it
+            DefaultQuota: 5000 # Default quota for new users (5000 tokens until reset)
+
+      Postdispatch:
+        - Type: "Warp.Dilithium.Middleware.JsonResponseToHeaderTransform, warp.dilithium"
+          Options:
+            Mappings:
+              - JqSelector: ".token_usage.total_tokens"
+                DestinationHeader: "X-Quota-Usage"
+
+        - Type: "Warp.Dilithium.Middleware.QuotaUpdater, warp.dilithium"
+          Options:
+            UsageHeader: "X-Quota-Usage" # Our API can return the actual usage in this header (defaults to 1.0 if not present)                
+
+        - Type: "Warp.Dilithium.Middleware.WebhookDelivery, warp.dilithium"
+          Options:
+            WebhookUrl: "${WEBHOOK_URL:http://localhost:8888/webhook}"
+            TimeoutSeconds: 30
+            MaxRetries: 3
+            RetryDelaySeconds: 5
+            Headers:
+              X-Source: "warp-plasma"
+              X-Job-Type: "memoryalpha_async"
+# Job processor behavior
+Processor:
+  EnableHealthCheck: true
+  HealthCheckIntervalMs: 30000
+  RetryFailedJobs: true
+  MaxRetryAttempts: 3
+  RetryDelayMs: 10000

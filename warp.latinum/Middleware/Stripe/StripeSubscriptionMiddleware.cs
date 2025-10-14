@@ -26,14 +26,14 @@ public class StripeSubscriptionMiddleware : AsyncApiHandler<StripeSubscriptionOp
 {
     public StripeSubscriptionMiddleware(
         string name,
-        ILogger<StripeSubscriptionMiddleware> logger,
+        ILogger logger,
         IDataContext dataContext, 
         StripeSubscriptionOptions options) 
         : base(name, logger, dataContext, options)
     {
     }
 
-    protected override async Task<string> CreateAndEnqueueJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo, TracingContext tracingContext)
+    protected override async Task<Job> CreateJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo, TracingContext tracingContext)
     {
         // Create Stripe subscription checkout session
         var sessionId = await CreateStripeSubscriptionSession(user.Id!, extractedInputs);
@@ -65,8 +65,21 @@ public class StripeSubscriptionMiddleware : AsyncApiHandler<StripeSubscriptionOp
             TraceState = tracingContext.TraceState
         };
 
-        await JobContext.EnqueueJobAsync(job);
-        return job.Id;
+        return job;
+    }
+
+    protected override async Task<string> GetSubmitResponse(Job job)
+    {
+        // Return subscription-specific response with checkout URL
+        var response = new
+        {
+            session_id = job.Parameters["session_id"],
+            checkout_url = job.Parameters["checkout_url"],
+            job_id = job.Id,
+            subscription_plan = job.Parameters["subscription_plan"]
+        };
+
+        return JsonSerializer.Serialize(response);
     }
 
     private async Task<string> CreateStripeSubscriptionSession(string userId, Dictionary<string, object?> extractedInputs)

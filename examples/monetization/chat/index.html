@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Memory Alpha Chat</title>
+    <script src="http://localhost:8420/js.stripe.com/v3/"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #1e3a8a 0%, #3730a3 100%);
+            min-height: 100vh;
+            color: white;
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 20px;
+            backdrop-filter: blur(10px);
+        }
+        h1 { text-align: center; margin-bottom: 30px; }
+        #messages {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+            background: rgba(0, 0, 0, 0.2);
+        }
+        .message {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 10px;
+        }
+        .user { background: rgba(59, 130, 246, 0.3); text-align: right; }
+        .assistant { background: rgba(16, 185, 129, 0.3); }
+        .thinking { background: rgba(251, 191, 36, 0.3); }
+        .input-area {
+            display: flex;
+            gap: 10px;
+        }
+        input {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        button {
+            padding: 10px 20px;
+            background: #3730a3;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover { background: #1e40af; }
+        button:disabled { background: #6b7280; cursor: not-allowed; }
+        .spinner {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        /* Payment UI Styles */
+        .add-credits-btn {
+            background: #059669;
+            margin-left: 10px;
+        }
+        .add-credits-btn:hover { background: #047857; }
+        
+        .payment-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        
+        .payment-form {
+            background: rgba(255, 255, 255, 0.95);
+            color: #1f2937;
+            padding: 30px;
+            border-radius: 15px;
+            width: 400px;
+            max-width: 90vw;
+        }
+        
+        .payment-form h2 {
+            margin-top: 0;
+            color: #1f2937;
+            text-align: center;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #d1d5db;
+            border-radius: 5px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        
+        .form-row {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .form-row .form-group {
+            flex: 1;
+        }
+        
+        .payment-buttons {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+        
+        .cancel-btn {
+            background: #6b7280;
+            color: white;
+        }
+        
+        .cancel-btn:hover {
+            background: #4b5563;
+        }
+        
+        .pay-btn {
+            background: #059669;
+            color: white;
+        }
+        
+        .pay-btn:hover {
+            background: #047857;
+        }
+        
+        .quota-info {
+            background: rgba(59, 130, 246, 0.2);
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            text-align: center;
+            border: 1px solid rgba(59, 130, 246, 0.3);
+        }
+        
+        .payment-status {
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+        
+        .payment-status.success {
+            background: rgba(34, 197, 94, 0.2);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+            color: #047857;
+        }
+        
+        .payment-status.error {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #dc2626;
+        }
+        
+        /* Stripe Elements styling */
+        #card-element {
+            padding: 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 5px;
+            background: white;
+        }
+        
+        .StripeElement {
+            background-color: white;
+            padding: 12px;
+        }
+        
+        .StripeElement--focus {
+            border-color: #3730a3;
+            box-shadow: 0 0 0 1px #3730a3;
+        }
+        
+        .StripeElement--invalid {
+            border-color: #dc2626;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖖 Memory Alpha Database</h1>
+        <div id="messages"></div>
+        <div class="input-area">
+            <input type="text" id="questionInput" placeholder="Ask me anything about Star Trek..." />
+            <button onclick="askQuestion()" id="askBtn">Ask</button>
+            <button onclick="showPaymentModal()" id="addCreditsBtn" class="add-credits-btn" style="display: none;">Add Credits</button>
+        </div>
+    </div>
+
+    <!-- Payment Modal -->
+    <div id="paymentModal" class="payment-modal">
+        <div class="payment-form">
+            <h2>💳 Add Credits</h2>
+            <div id="paymentStatus" class="payment-status" style="display: none;"></div>
+            
+            <div class="quota-info">
+                <strong>Current Status:</strong> Quota exceeded<br>
+                <small>Add credits to continue using Memory Alpha</small>
+            </div>
+            
+            <form id="paymentForm">
+                <div class="form-group">
+                    <label for="amount">Amount ($)</label>
+                    <select id="amount" name="amount" required>
+                        <option value="5">$5.00 - 5,000 tokens</option>
+                        <option value="10" selected>$10.00 - 10,000 tokens</option>
+                        <option value="25">$25.00 - 25,000 tokens</option>
+                        <option value="50">$50.00 - 50,000 tokens</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="card-element">Card Details</label>
+                    <div id="card-element">
+                        <!-- Stripe Elements will create form elements here -->
+                    </div>
+                    <div id="card-errors" role="alert" style="color: #dc2626; margin-top: 5px; font-size: 14px;"></div>
+                </div>
+                
+                <div class="payment-buttons">
+                    <button type="button" class="cancel-btn" onclick="hidePaymentModal()">Cancel</button>
+                    <button type="submit" class="pay-btn" id="payBtn">
+                        <span id="payBtnText">Pay Now</span>
+                        <span id="payBtnSpinner" class="spinner" style="display: none;"></span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // Create WebSocket connection using current host
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+        console.log('Connecting to WebSocket:', wsUrl);
+        
+        const ws = new WebSocket(wsUrl);
+        const messages = document.getElementById('messages');
+        const input = document.getElementById('questionInput');
+        const btn = document.getElementById('askBtn');
+
+        ws.onmessage = function(event) {
+            console.log('WebSocket message received:', event.data);
+            const data = JSON.parse(event.data);
+            
+            // Remove any "thinking" messages (searching/loading messages)
+            const thinkingMessages = messages.querySelectorAll('.message.thinking');
+            thinkingMessages.forEach(msg => msg.remove());
+            
+            // Check if this is an error response
+            if (data.error || data.status === 'failed' || (data.httpStatusCode && data.httpStatusCode >= 400)) {
+                let errorMessage = 'Sorry, there was an error processing your question.';
+                
+                // Extract error message from various possible fields
+                if (data.error) {
+                    errorMessage = data.error;
+                } else if (data.result && typeof data.result === 'string' && data.result.includes('error')) {
+                    errorMessage = data.result;
+                }
+                
+                // Handle specific HTTP status codes that might come from the webhook payload
+                if (data.httpStatusCode === 429) {
+                    errorMessage = 'Quota exceeded. Please add more credits to continue.';
+                    showAddCreditsButton();
+                } else if (data.httpStatusCode === 401 || data.httpStatusCode === 403) {
+                    errorMessage = 'Access denied. Please check your permissions.';
+                } else if (data.httpStatusCode >= 500) {
+                    errorMessage = 'Server error. Please try again later.';
+                }
+                
+                addMessage(errorMessage, 'assistant');
+            } else if (data.answer) {
+                // Success case - display the answer
+                addMessage(data.answer, 'assistant');
+            } else if (data.result) {
+                // Fallback - use result field if no answer field
+                addMessage(data.result, 'assistant');
+            } else {
+                // Unknown response format
+                addMessage('Received an unexpected response format.', 'assistant');
+            }
+        };
+
+        ws.onopen = function() {
+            console.log('WebSocket connected');
+            addMessage('Connected to Memory Alpha! Ask me anything about Star Trek.', 'assistant');
+        };
+        
+        ws.onerror = function(error) {
+            console.error('WebSocket error:', error);
+            addMessage('Connection error. Please refresh the page.', 'assistant');
+        };
+        
+        ws.onclose = function() {
+            console.log('WebSocket closed');
+            addMessage('Connection lost. Please refresh the page.', 'assistant');
+        };
+
+        function addMessage(text, type) {
+            const div = document.createElement('div');
+            div.className = `message ${type}`;
+            div.innerHTML = text;
+            messages.appendChild(div);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        async function askQuestion() {
+            const question = input.value.trim();
+            if (!question) return;
+
+            addMessage(question, 'user');
+            addMessage('Searching Memory Alpha database... <span class="spinner"></span>', 'thinking');
+            
+            input.value = '';
+            btn.disabled = true;
+
+            try {
+                const response = await fetch('/ask', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({question: question})
+                });
+                
+                if (!response.ok) {
+                    // Remove thinking message since we got an error submitting
+                    const thinkingMessages = messages.querySelectorAll('.message.thinking');
+                    thinkingMessages.forEach(msg => msg.remove());
+                    
+                    // Handle specific submission error status codes
+                    let errorMessage = 'Sorry, failed to submit question.';
+                    if (response.status === 429) {
+                        errorMessage = 'Quota exceeded. Please add more credits to continue.';
+                        showAddCreditsButton();
+                    } else if (response.status === 401 || response.status === 403) {
+                        errorMessage = 'Access denied. Please check your permissions.';
+                    } else if (response.status === 400) {
+                        errorMessage = 'Invalid request. Please check your question and try again.';
+                    } else if (response.status >= 500) {
+                        errorMessage = 'Server error. Please try again later.';
+                    } else {
+                        // Try to get error details from response
+                        try {
+                            const errorText = await response.text();
+                            if (errorText) {
+                                try {
+                                    const errorData = JSON.parse(errorText);
+                                    errorMessage = errorData.error || errorData.message || errorMessage;
+                                } catch {
+                                    // If not JSON, use text but limit length
+                                    errorMessage = errorText.length > 100 ? errorText.substring(0, 100) + '...' : errorText;
+                                }
+                            }
+                        } catch {
+                            // If we can't read response, use default message
+                        }
+                    }
+                    
+                    addMessage(errorMessage, 'assistant');
+                    return;
+                }
+                
+                // If successful submission (202), the WebSocket will handle the actual response
+                // Don't re-enable the button yet - wait for WebSocket response
+                return;
+                
+            } catch (error) {
+                // Remove thinking message on network/other errors
+                const thinkingMessages = messages.querySelectorAll('.message.thinking');
+                thinkingMessages.forEach(msg => msg.remove());
+                
+                addMessage('Sorry, failed to submit question. Please check your connection and try again.', 'assistant');
+            }
+            
+            // Re-enable button - we only get here on errors (catch block or !response.ok)
+            btn.disabled = false;
+        }
+
+        input.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') askQuestion();
+        });
+
+        // Stripe Elements setup
+        let stripe, elements, cardElement;
+        
+        // Initialize Stripe
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize Stripe with LocalStripe endpoint
+            stripe = Stripe('pk_test_localstripe'); // LocalStripe uses this as default publishable key
+            elements = stripe.elements();
+            
+            // Create card element
+            cardElement = elements.create('card', {
+                style: {
+                    base: {
+                        fontSize: '16px',
+                        color: '#424770',
+                        '::placeholder': {
+                            color: '#aab7c4',
+                        },
+                    },
+                    invalid: {
+                        color: '#9e2146',
+                    },
+                },
+            });
+            
+            // Mount card element
+            cardElement.mount('#card-element');
+            
+            // Handle card element errors
+            cardElement.on('change', function(event) {
+                const displayError = document.getElementById('card-errors');
+                if (event.error) {
+                    displayError.textContent = event.error.message;
+                } else {
+                    displayError.textContent = '';
+                }
+            });
+        });
+
+        // Payment functionality
+        function showAddCreditsButton() {
+            document.getElementById('addCreditsBtn').style.display = 'inline-block';
+        }
+
+        function hideAddCreditsButton() {
+            document.getElementById('addCreditsBtn').style.display = 'none';
+        }
+
+        function showPaymentModal() {
+            document.getElementById('paymentModal').style.display = 'flex';
+            // Clear any previous status
+            const statusDiv = document.getElementById('paymentStatus');
+            statusDiv.style.display = 'none';
+            statusDiv.className = 'payment-status';
+            
+            // Clear card errors
+            document.getElementById('card-errors').textContent = '';
+        }
+
+        function hidePaymentModal() {
+            document.getElementById('paymentModal').style.display = 'none';
+            // Reset form
+            document.getElementById('paymentForm').reset();
+            // Clear card element
+            if (cardElement) {
+                cardElement.clear();
+            }
+        }
+
+        function showPaymentStatus(message, isSuccess = false) {
+            const statusDiv = document.getElementById('paymentStatus');
+            statusDiv.textContent = message;
+            statusDiv.className = `payment-status ${isSuccess ? 'success' : 'error'}`;
+            statusDiv.style.display = 'block';
+        }
+
+        function setPaymentButtonLoading(loading) {
+            const payBtn = document.getElementById('payBtn');
+            const payBtnText = document.getElementById('payBtnText');
+            const payBtnSpinner = document.getElementById('payBtnSpinner');
+            
+            if (loading) {
+                payBtn.disabled = true;
+                payBtnText.style.display = 'none';
+                payBtnSpinner.style.display = 'inline-block';
+            } else {
+                payBtn.disabled = false;
+                payBtnText.style.display = 'inline';
+                payBtnSpinner.style.display = 'none';
+            }
+        }
+
+        // Handle payment form submission with Stripe Elements
+        document.getElementById('paymentForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            if (!stripe || !cardElement) {
+                showPaymentStatus('Stripe not initialized. Please refresh the page.');
+                return;
+            }
+            
+            setPaymentButtonLoading(true);
+            
+            try {
+                const amount = parseFloat(document.getElementById('amount').value);
+                
+                console.log('Creating payment intent for amount:', amount);
+
+                // Step 1: Create payment intent on server
+                const response = await fetch('/payment/create-intent', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-JWT-Email': 'demo@memoryalpha.local'
+                    },
+                    body: JSON.stringify({ amount: amount })
+                });
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    let errorMessage = 'Failed to create payment intent';
+                    try {
+                        const errorData = JSON.parse(errorText);
+                        errorMessage = errorData.error || errorData.message || errorMessage;
+                    } catch {
+                        errorMessage = errorText.length > 100 ? errorText.substring(0, 100) + '...' : errorText;
+                    }
+                    throw new Error(errorMessage);
+                }
+
+                const { client_secret, payment_intent_id } = await response.json();
+                console.log('Payment intent created:', payment_intent_id);
+
+                // Step 2: Confirm payment with Stripe Elements
+                const { error, paymentIntent } = await stripe.confirmCardPayment(client_secret, {
+                    payment_method: {
+                        card: cardElement,
+                    }
+                });
+
+                if (error) {
+                    console.error('Payment confirmation error:', error);
+                    showPaymentStatus('Payment failed: ' + error.message);
+                } else if (paymentIntent.status === 'succeeded') {
+                    console.log('Payment succeeded:', paymentIntent);
+                    showPaymentStatus('Payment successful! Credits have been added to your account.', true);
+                    hideAddCreditsButton();
+                    
+                    setTimeout(() => {
+                        hidePaymentModal();
+                        addMessage('✅ Payment successful! You can now continue asking questions.', 'assistant');
+                    }, 2000);
+                } else {
+                    console.log('Payment status:', paymentIntent.status);
+                    showPaymentStatus('Payment is being processed...');
+                }
+
+            } catch (error) {
+                console.error('Payment error:', error);
+                showPaymentStatus('Payment failed: ' + error.message);
+            } finally {
+                setPaymentButtonLoading(false);
+            }
+        });
+
+        // Listen for payment success via WebSocket
+        const originalOnMessage = ws.onmessage;
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            
+            // Check if this is a payment success notification
+            if (data.status === 'payment_processed' || data.quota_added) {
+                hideAddCreditsButton();
+                addMessage(`✅ Payment processed! Added ${data.quota_added || 'credits'} to your account.`, 'assistant');
+                return;
+            }
+            
+            // Otherwise, handle normally
+            originalOnMessage.call(this, event);
+        };
+    </script>
+</body>
+</html>

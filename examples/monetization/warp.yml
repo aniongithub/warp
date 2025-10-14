@@ -1,0 +1,94 @@
+# Warp API Gateway Configuration for Async example
+
+# Use an include to share configuration definitions
+$include: 
+- datacontext.yml
+- opentelemetry.yml
+
+ReverseProxy:
+  Clusters:
+    # Cluster that forwards requests to the MemoryAlpha RAG API service.
+    memoryalpha_cluster:
+      Destinations:
+        memoryalpha:
+          # We can use an environment variable to configure the service address
+          Address: ${MEMORYALPHA_RAG_API_ADDR:http://memoryalpha-rag-api:8000}
+
+  Routes:
+    # Asynchronous API route - handles all async operations (submit, status, result, cancel)
+    memoryalpha_async:
+      ClusterId: "memoryalpha_cluster"
+      Match:
+        Path: "/examples/async/{**catch-all}"
+      Transforms:
+        - PathRemovePrefix: "/examples"
+        - PathRemovePrefix: "/async"
+      Metadata:
+        Preprocess:
+          # Rate limiting for async API
+          - Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
+            Options:
+              RateLimitHz: 5.0
+          
+          # User identification and permissions
+          - Type: "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium"
+            Options:
+              UserIdHeader: "X-JWT-Email"
+              CreateUserIfNotFound: true
+              DefaultPermissions:
+                - "user"
+
+          # Ensure quota is available for job submission
+          - Type: "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium"
+            Options:
+              QuotaName: "free_quota"
+              QuotaType: "prepaid" # Prepaid quota type means we set a fixed quota and decrement it
+              DefaultQuota: 5000 # Default quota for new users (5000 tokens until reset)
+
+        Predispatch:
+          # Validate requests for job submission only
+          - Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
+            Options:
+              SpecUri: https://github.com/aniongithub/memoryalpha-rag-api/releases/download/${MEMORYALPHA_RAG_API_VERSION}/memoryalpha-rag-api-spec.json
+              
+          # Handle all async operations (submit, status, result, cancel)
+          - Type: "Warp.Dilithium.Middleware.RedisAsyncApiHandler, warp.dilithium"
+            Options:
+              ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379,defaultDatabase=0}"
+              Channel: "memoryalpha_async"
+              MaxConcurrentDispatches: 10
+              DispatchTimeoutMs: 30000
+              UserIdHeader: "X-JWT-Email"
+
+    # Payment route - handles Stripe payment intents
+    stripe_payments:
+      ClusterId: "memoryalpha_cluster"  # Can reuse cluster, middleware handles it
+      Match:
+        Path: "/payment/{**catch-all}"
+      Metadata:
+        Preprocess:
+          # User identification for payment processing
+          - Type: "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium"
+            Options:
+              UserIdHeader: "X-JWT-Email"
+              CreateUserIfNotFound: true
+              DefaultPermissions:
+                - "user"
+
+        Predispatch:
+          # Handle Stripe payment processing
+          - Type: "Warp.Latinum.Middleware.Stripe.StripePaymentMiddleware, warp.latinum"
+            Options:
+              ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379,defaultDatabase=0}"
+              Channel: "stripe_payment_async"
+              MaxConcurrentDispatches: 5
+              DispatchTimeoutMs: 60000
+              UserIdHeader: "X-JWT-Email"
+              CurrencyMultiplier: 1000  # $1 = 1000 quota tokens
+              WebhookUrl: "/webhook/stripe/payment"
+              StripeSecretKey: "${STRIPE_SECRET_KEY:sk_test_localstripe}"
+              StripePublishableKey: "${STRIPE_PUBLISHABLE_KEY:pk_test_localstripe}"
+              WebhookSecret: "${STRIPE_WEBHOOK_SECRET:whsec_test_localstripe}"
+              Currency: "usd"
+              PaymentIntentExpirationMinutes: 30
+              StripeApiBase: "${STRIPE_API_BASE:http://localstripe:8420}"

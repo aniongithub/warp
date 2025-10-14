@@ -2,12 +2,15 @@ using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using Warp.Core.Data;
 using Warp.Core.Job;
 using Warp.Core.Job.Contexts;
+using Warp.Core.Middleware;
 using Warp.Dilithium.Middleware;
+using Stripe;
 
 namespace Warp.Latinum.Middleware.Stripe;
 
@@ -20,21 +23,31 @@ public class StripePaymentOptions : AsyncApiHandlerOptions
     public string WebhookSecret { get; set; } = string.Empty;
     public string Currency { get; set; } = "usd";
     public int PaymentIntentExpirationMinutes { get; set; } = 30;
+    public string StripeApiBase { get; set; } = "https://api.stripe.com"; // Default to real Stripe, can override for LocalStripe
     // ConnectionString and Channel are inherited from AsyncApiHandlerOptions
 }
 
 public class StripePaymentMiddleware : AsyncApiHandler<StripePaymentOptions, RedisJobContext>
 {
+    private readonly PaymentIntentService _paymentIntentService;
+
     public StripePaymentMiddleware(
         string name,
-        ILogger<StripePaymentMiddleware> logger,
+        ILogger logger,
         IDataContext dataContext, 
         StripePaymentOptions options) 
         : base(name, logger, dataContext, options)
     {
+        // Configure Stripe client with custom base URL for LocalStripe
+        var stripeClient = new StripeClient(
+            apiKey: options.StripeSecretKey,
+            apiBase: options.StripeApiBase
+        );
+        
+        _paymentIntentService = new PaymentIntentService(stripeClient);
     }
 
-    protected override async Task<string> CreateAndEnqueueJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo, TracingContext tracingContext)
+    protected override async Task<Job> CreateJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo, TracingContext tracingContext)
     {
         // Extract and validate payment amount
         if (!extractedInputs.TryGetValue("amount", out var amountObj) || 
@@ -50,8 +63,11 @@ public class StripePaymentMiddleware : AsyncApiHandler<StripePaymentOptions, Red
         // Calculate quota increase based on currency multiplier
         var quotaIncrease = (int)(amount * Options.CurrencyMultiplier);
 
+        // Get client secret from payment intent
+        var clientSecret = await GetClientSecretAsync(paymentIntentId);
+
         // Enhance parameters with payment-specific data
-        var enhancedParameters = new Dictionary<string, object?>(extractedInputs)
+        var parameters = new Dictionary<string, object?>(extractedInputs)
         {
             ["type"] = "stripe_payment",
             ["amount"] = amount,
@@ -59,7 +75,8 @@ public class StripePaymentMiddleware : AsyncApiHandler<StripePaymentOptions, Red
             ["payment_intent_id"] = paymentIntentId,
             ["webhook_url"] = Options.WebhookUrl ?? $"/webhook/stripe/payment/{Guid.NewGuid()}",
             ["quota_type"] = "prepaid",
-            ["client_secret"] = GetClientSecret(paymentIntentId)
+            ["quota_name"] = "credits",
+            ["client_secret"] = clientSecret
         };
 
         // Create the job with enhanced parameters
@@ -71,34 +88,73 @@ public class StripePaymentMiddleware : AsyncApiHandler<StripePaymentOptions, Red
             OriginalPath = routingInfo.OriginalPath,
             ClusterId = routingInfo.ClusterId,
             TargetDestination = routingInfo.TargetDestination,
-            Parameters = enhancedParameters,
+            Parameters = parameters,
             Headers = routingInfo.Headers,
             ParameterMappings = parameterMappings,
             TraceParent = tracingContext.TraceParent,
             TraceState = tracingContext.TraceState
         };
 
-        await JobContext.EnqueueJobAsync(job);
-        return job.Id;
+        return job;
+    }
+
+    protected override async Task<string> GetSubmitResponse(Job job)
+    {
+        // Return payment-specific response with client_secret
+        var response = new
+        {
+            client_secret = job.Parameters["client_secret"],
+            payment_intent_id = job.Parameters["payment_intent_id"],
+            job_id = job.Id,
+            amount = job.Parameters["amount"],
+            quota_increase = job.Parameters["quota_increase"]
+        };
+
+        return JsonSerializer.Serialize(response);
     }
 
     private async Task<string> CreateStripePaymentIntent(string userId, decimal amount, Dictionary<string, object?> extractedInputs)
     {
-        // TODO: Implement Stripe API call to create payment intent
-        // This would use the Stripe .NET SDK to create a payment intent
-        // Amount should be in cents for Stripe
-        var amountInCents = (long)(amount * 100);
-        
-        Logger.LogInformation("Creating Stripe payment intent for user {UserId} with amount {Amount} {Currency}", 
-            userId, amount, Options.Currency);
-        
-        // For now, return a mock payment intent ID
-        await Task.Delay(100); // Simulate API call
-        return $"pi_test_{Guid.NewGuid():N}";
+        try
+        {
+            // Amount should be in cents for Stripe
+            var amountInCents = (long)(amount * 100);
+            
+            Logger.LogInformation("Creating Stripe payment intent for user {UserId} with amount {Amount} {Currency}", 
+                userId, amount, Options.Currency);
+
+            var options = new PaymentIntentCreateOptions
+            {
+                Amount = amountInCents,
+                Currency = Options.Currency,
+                Metadata = new Dictionary<string, string>
+                {
+                    ["user_id"] = userId,
+                    ["quota_increase"] = ((int)(amount * Options.CurrencyMultiplier)).ToString()
+                }
+            };
+            
+            var paymentIntent = await _paymentIntentService.CreateAsync(options);
+            return paymentIntent.Id;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to create Stripe payment intent for user {UserId}", userId);
+            throw;
+        }
     }
 
-    private string GetClientSecret(string paymentIntentId)
+    private async Task<string> GetClientSecretAsync(string paymentIntentId)
     {
-        return $"{paymentIntentId}_secret_{Guid.NewGuid():N}";
+        try
+        {
+            var paymentIntent = await _paymentIntentService.GetAsync(paymentIntentId);
+            return paymentIntent.ClientSecret ?? throw new Exception("Payment intent has no client secret");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to retrieve client secret for payment intent {PaymentIntentId}", paymentIntentId);
+            throw;
+        }
     }
 }

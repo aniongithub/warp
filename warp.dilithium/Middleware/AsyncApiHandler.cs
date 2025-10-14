@@ -125,32 +125,37 @@ public abstract class AsyncApiHandler<TOptions, TJobContext> : MiddlewareBase<TO
     protected virtual OperationContext? DetermineOperation(string path, string method)
     {
         var operationType = GetOperationType(path, method);
-        
+
         if (operationType == "Sync")
             return null; // Not an async operation
-        
+
         var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        
+
         return operationType switch
         {
             "AsyncSubmit" => new OperationContext { Type = AsyncOperation.Submit },
-            "AsyncStatus" => new OperationContext 
-            { 
-                Type = AsyncOperation.Status, 
-                JobId = segments.Length > 0 ? segments[^1] : null 
+            "AsyncStatus" => new OperationContext
+            {
+                Type = AsyncOperation.Status,
+                JobId = segments.Length > 0 ? segments[^1] : null
             },
-            "AsyncResult" => new OperationContext 
-            { 
-                Type = AsyncOperation.Result, 
-                JobId = segments.Length > 0 ? segments[^1] : null 
+            "AsyncResult" => new OperationContext
+            {
+                Type = AsyncOperation.Result,
+                JobId = segments.Length > 0 ? segments[^1] : null
             },
-            "AsyncCancel" => new OperationContext 
-            { 
-                Type = AsyncOperation.Cancel, 
-                JobId = segments.Length > 0 ? segments[^1] : null 
+            "AsyncCancel" => new OperationContext
+            {
+                Type = AsyncOperation.Cancel,
+                JobId = segments.Length > 0 ? segments[^1] : null
             },
             _ => null
         };
+    }
+
+    protected virtual async Task<string> GetSubmitResponse(Job job)
+    {
+        return JsonSerializer.Serialize(new { job.Id, statusCode = 202 });
     }
 
     private async Task<IResult> HandleSubmit(HttpContext context, OperationContext operation)
@@ -180,12 +185,15 @@ public abstract class AsyncApiHandler<TOptions, TJobContext> : MiddlewareBase<TO
             var routingInfo = ExtractRoutingInfo(context);
             var tracingContext = ExtractTracingContext(context);
             var user = await GetUserAsync(context);
-            var jobId = await CreateAndEnqueueJobAsync(user, extractedInputs, parameterMappings, routingInfo, tracingContext);
+            var job = await CreateJobAsync(user, extractedInputs, parameterMappings, routingInfo, tracingContext);
+            await JobContext.EnqueueJobAsync(job);
             
-            Logger.LogDebug("Job {JobId} submitted successfully, releasing concurrency slot", jobId);
+            Logger.LogDebug("Job {JobId} submitted successfully, releasing concurrency slot", job.Id);
+
+            var response = await GetSubmitResponse(job);
             
             return Results
-                .Json(new { jobId }, statusCode: 202)
+                .Json(response)
                 .Stop();
         }
         finally
@@ -254,18 +262,18 @@ public abstract class AsyncApiHandler<TOptions, TJobContext> : MiddlewareBase<TO
         {
             throw new ArgumentException($"Missing user id header: {Options.UserIdHeader}");
         }
-        
+
         var user = DataContext.Users.FirstOrDefault(u => u.Email == userEmail);
         if (user == null)
         {
             throw new KeyNotFoundException($"User not found: {userEmail}");
         }
-        
+
         return Task.FromResult(user);
     }
 
     // Default implementations using job context - can be overridden if needed
-    protected virtual async Task<string> CreateAndEnqueueJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo, TracingContext tracingContext)
+    protected virtual async Task<Job> CreateJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo, TracingContext tracingContext)
     {
         var job = new Job
         {
@@ -282,8 +290,7 @@ public abstract class AsyncApiHandler<TOptions, TJobContext> : MiddlewareBase<TO
             TraceState = tracingContext.TraceState
         };
 
-        await JobContext.EnqueueJobAsync(job);
-        return job.Id;
+        return job;
     }
 
     protected virtual async Task<JobStatus> GetJobStatusAsync(string jobId, string userId)

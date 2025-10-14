@@ -20,25 +20,4 @@ public sealed class RedisAsyncApiHandler : AsyncApiHandler<RedisAsyncApiHandlerO
         : base(name, logger, context, options)
     {
     }
-
-    protected override async Task<string> CreateAndEnqueueJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo, TracingContext tracingContext)
-    {
-        var job = new Job
-        {
-            User = user,
-            QueuedAt = DateTime.UtcNow,
-            Status = JobStatus.Queued,
-            OriginalPath = routingInfo.OriginalPath,
-            ClusterId = routingInfo.ClusterId,
-            TargetDestination = routingInfo.TargetDestination,
-            Parameters = extractedInputs,
-            Headers = routingInfo.Headers,
-            ParameterMappings = parameterMappings,
-            TraceParent = tracingContext.TraceParent,
-            TraceState = tracingContext.TraceState
-        };
-
-        await JobContext.EnqueueJobAsync(job);
-        return job.Id;
-    }
 }
