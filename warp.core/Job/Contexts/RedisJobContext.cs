@@ -125,14 +125,41 @@ public class RedisJobContext : JobContextBase
     public override async Task<T> LookupJobAsync<T>(string id, JobStatus status, string userId)
     {
         EnsureInitialized();
-        var key = JobKey(id, status, userId);
-        var jobData = await _db!.StringGetAsync(key);
-        var jobStr = jobData.ToString();
         
-        if (!jobData.HasValue || string.IsNullOrEmpty(jobStr))
-            throw new KeyNotFoundException($"Job {id} not found");
+        // If userId is "*", use wildcard pattern search
+        if (userId == "*")
+        {
+            var server = _db!.Multiplexer.GetServer(_db.Multiplexer.GetEndPoints().First());
+            var pattern = JobKey(id, status, "*");
+            var keys = server.Keys(pattern: pattern).ToList();
             
-        return DeserializeJob<T>(jobStr);
+            if (keys.Count == 0)
+            {
+                throw new KeyNotFoundException($"Job {id} not found");
+            }
+            
+            var jobKey = keys.First();
+            var jobData = await _db.StringGetAsync(jobKey);
+            
+            if (!jobData.HasValue || string.IsNullOrEmpty(jobData))
+            {
+                throw new KeyNotFoundException($"Job {id} not found");
+            }
+            
+            return DeserializeJob<T>(jobData.ToString());
+        }
+        else
+        {
+            // Standard exact lookup
+            var key = JobKey(id, status, userId);
+            var jobData = await _db!.StringGetAsync(key);
+            var jobStr = jobData.ToString();
+            
+            if (!jobData.HasValue || string.IsNullOrEmpty(jobStr))
+                throw new KeyNotFoundException($"Job {id} not found");
+                
+            return DeserializeJob<T>(jobStr);
+        }
     }
 
     public override async Task<JobStatus> GetJobStatusAsync(string id, string userId)

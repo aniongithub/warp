@@ -20,8 +20,19 @@ class PaymentIntentRequest(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def get():
+    # Load the static HTML file
     with open("index.html", "r") as f:
-        return f.read()
+        html = f.read()
+    
+    # Replace placeholders with env var values
+    import os
+    replacements = {
+        "{{STRIPE_PUBLISHABLE_KEY}}": os.getenv("STRIPE_PUBLISHABLE_KEY", ""),
+    }
+    for key, value in replacements.items():
+        html = html.replace(key, value)
+    
+    return html
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

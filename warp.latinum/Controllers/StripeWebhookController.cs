@@ -1,41 +1,34 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Configuration;
+
+using Microsoft.Extensions.Options;
 using Warp.Core.Data;
 using Warp.Core.Job;
 using Warp.Core.Job.Contexts;
+using Warp.Latinum.Attributes;
 
 namespace Warp.Latinum.Controllers;
 
 [ApiController]
-[Route("webhook/stripe")]
+[Route("/stripe")]
+[StripeController]
 public class StripeWebhookController : ControllerBase
 {
     private readonly IDataContext _dataContext;
     private readonly ILogger<StripeWebhookController> _logger;
-    private readonly IConfiguration _configuration;
+    private readonly StripeWebhookOptions _options;
+    private readonly IJobContext _jobContext;
 
-    public StripeWebhookController(IDataContext dataContext, ILogger<StripeWebhookController> logger, IConfiguration configuration)
+    public StripeWebhookController(IDataContext dataContext, ILogger<StripeWebhookController> logger, IOptions<StripeWebhookOptions> options)
     {
         _dataContext = dataContext;
         _logger = logger;
-        _configuration = configuration;
-    }
-
-    private RedisJobContext CreateJobContext(string channel)
-    {
-        var redisConfig = _configuration.GetSection("Redis");
-        var connectionString = redisConfig.GetValue<string>("ConnectionString") ?? "localhost:6379";
+        _options = options.Value;
         
+        // Initialize JobContext once in constructor
         var jobContext = new RedisJobContext();
-        jobContext.Initialize(connectionString, channel);
-        
-        return jobContext;
+        jobContext.Initialize(_options.ConnectionString, _options.Channel);
+        _jobContext = jobContext;
     }
 
     [HttpPost("subscription/{jobId}")]
@@ -45,12 +38,10 @@ public class StripeWebhookController : ControllerBase
         {
             _logger.LogInformation("Received subscription webhook for job {JobId}", jobId);
 
-            var jobContext = CreateJobContext("stripe_subscription_async");
-
             Job? job = null;
             foreach (JobStatus status in Enum.GetValues(typeof(JobStatus)))
             {
-                job = await jobContext.LookupJobAsync<Job>(jobId, status, "");
+                job = await _jobContext.LookupJobAsync<Job>(jobId, status, "");
                 if (job != null) break;
             }
             
@@ -66,7 +57,7 @@ public class StripeWebhookController : ControllerBase
 
             await UpdateUserQuotaForSubscription(job.User?.Id ?? "", subscriptionPlan);
 
-            await jobContext.UpdateJobAsync(job, JobStatus.Completed, 
+            await _jobContext.UpdateJobAsync(job, JobStatus.Completed, 
                 output: JsonSerializer.Serialize(new { status = "subscription_activated", plan = subscriptionPlan }));
 
             _logger.LogInformation("Successfully processed subscription webhook for job {JobId}", jobId);
@@ -80,26 +71,58 @@ public class StripeWebhookController : ControllerBase
         }
     }
 
-    [HttpPost("payment/{jobId}")]
-    public async Task<IActionResult> HandlePaymentWebhook(string jobId, [FromBody] object webhookData)
+    [HttpPost("payment")]
+    public async Task<IActionResult> HandlePaymentWebhook([FromBody] JsonElement webhookData)
     {
         try
         {
-            _logger.LogInformation("Received payment webhook for job {JobId}", jobId);
+            _logger.LogInformation("Received Stripe webhook: {WebhookType}", 
+                webhookData.TryGetProperty("type", out var typeElement) ? typeElement.GetString() : "unknown");
 
-            var jobContext = CreateJobContext("stripe_payment_async");
+            // Extract event type to filter relevant events
+            if (!webhookData.TryGetProperty("type", out var eventTypeElement))
+            {
+                _logger.LogWarning("Received webhook without event type");
+                return BadRequest("Missing event type");
+            }
 
+            var eventType = eventTypeElement.GetString();
+
+            // Only process payment intent events
+            if (eventType != "payment_intent.succeeded" && eventType != "payment_intent.payment_failed")
+            {
+                _logger.LogInformation("Ignoring webhook event type: {EventType}", eventType);
+                return Ok(new { status = "ignored", event_type = eventType });
+            }
+            // Extract payment intent ID from webhook data
+            string? paymentIntentId = null;
+            if (webhookData.TryGetProperty("data", out var dataElement) &&
+                dataElement.TryGetProperty("object", out var objectElement) &&
+                objectElement.TryGetProperty("id", out var idElement))
+            {
+                paymentIntentId = idElement.GetString();
+            }
+
+            if (string.IsNullOrEmpty(paymentIntentId))
+            {
+                _logger.LogWarning("Received payment webhook without payment intent ID");
+                return BadRequest("Missing payment intent ID");
+            }
+
+            _logger.LogInformation("Received payment webhook for payment intent {PaymentIntentId}", paymentIntentId);
+
+            // Look up job using payment intent ID as job ID
             Job? job = null;
             foreach (JobStatus status in Enum.GetValues(typeof(JobStatus)))
             {
-                job = await jobContext.LookupJobAsync<Job>(jobId, status, "");
+                job = await _jobContext.LookupJobAsync<Job>(paymentIntentId, status, "*");
                 if (job != null) break;
             }
             
             if (job == null)
             {
-                _logger.LogWarning("Job {JobId} not found", jobId);
-                return NotFound($"Job {jobId} not found");
+                _logger.LogWarning("Job not found for payment intent {PaymentIntentId}", paymentIntentId);
+                return NotFound($"Job not found for payment intent {paymentIntentId}");
             }
 
             var quotaIncrease = job.Parameters.TryGetValue("quota_increase", out var quotaObj) && 
@@ -111,16 +134,16 @@ public class StripeWebhookController : ControllerBase
 
             await UpdateUserQuotaForPayment(job.User?.Id ?? "", quotaName, quotaIncrease);
 
-            await jobContext.UpdateJobAsync(job, JobStatus.Completed, 
+            await _jobContext.UpdateJobAsync(job, JobStatus.Completed, 
                 output: JsonSerializer.Serialize(new { status = "payment_processed", quota_name = quotaName, quota_added = quotaIncrease }));
 
-            _logger.LogInformation("Successfully processed payment webhook for job {JobId}", jobId);
+            _logger.LogInformation("Successfully processed payment webhook for payment intent {PaymentIntentId}", paymentIntentId);
 
-            return Ok(new { status = "completed", job_id = jobId, quota_name = quotaName, quota_increase = quotaIncrease });
+            return Ok(new { status = "completed", job_id = paymentIntentId, quota_name = quotaName, quota_increase = quotaIncrease });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing payment webhook for job {JobId}", jobId);
+            _logger.LogError(ex, "Error processing payment webhook");
             return StatusCode(500, "Internal server error");
         }
     }
@@ -174,4 +197,6 @@ public class StripeWebhookController : ControllerBase
 
         _logger.LogInformation("Increased {QuotaName} quota for user {UserId} by {Increase}", quotaName, userId, quotaIncrease);
     }
+
+
 }

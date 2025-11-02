@@ -1,10 +1,13 @@
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using System.Diagnostics;
+using System.Reflection;
 using Warp.Core.Data;
 using Warp.Core.Helper;
-using Warp.Latinum.Middleware.Stripe;
+using Warp.Latinum.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 var assemblyName = "warp.latinum";
@@ -12,32 +15,36 @@ var assemblyName = "warp.latinum";
 // Load configuration from warp.latinum.yml using Warp config system
 var configBuilder = new ConfigurationBuilder().AddWarpConfiguration("warp.latinum",
     baseDirectory: Environment.GetEnvironmentVariable("WARP_CONFIG_BASE_DIR") ?? "./config");
-var warpConfig = configBuilder.Build();
+var config = configBuilder.Build();
+
+// Configure Kestrel URLs from the loaded configuration
+var kestrelSection = config.GetSection("Kestrel");
+if (kestrelSection.Exists())
+{
+    builder.WebHost.UseConfiguration(config);
+}
 
 // Configure data context
 IDataContext? dataContext = null;
-var dataContextSection = warpConfig.GetSection("DataContext");
+var dataContextSection = config.GetSection("DataContext");
 if (dataContextSection.Exists())
 {
     dataContext = dataContextSection.CreateFromConfiguration();
     builder.Services.AddSingleton(dataContext);
 }
 
-// Configure Stripe middleware options using the Warp config
-builder.Services.Configure<StripeSubscriptionOptions>(
-    warpConfig.GetSection("Stripe:Subscription"));
-builder.Services.Configure<StripePaymentOptions>(
-    warpConfig.GetSection("Stripe:Payment"));
+// Add HTTP client for webhook registration  
+builder.Services.AddHttpClient();
 
-// Register middleware
-builder.Services.AddScoped<StripeSubscriptionMiddleware>();
-builder.Services.AddScoped<StripePaymentMiddleware>();
-
-// Add controllers
+// Add basic MVC controllers
 builder.Services.AddControllers();
 
+// Configure custom controllers from configuration using Warp's pattern
+var controllersSection = config.GetSection("Controllers");
+builder.Services.AddControllersFromConfig(controllersSection);
+
 // Add OpenTelemetry tracing using the Warp config
-var otelSection = warpConfig.GetSection("OpenTelemetry");
+var otelSection = config.GetSection("OpenTelemetry");
 var sourceNames = otelSection.GetSection("SourceNames").Get<string[]>() ?? new[] { "Warp" };
 var otelEndpoint = otelSection.GetValue<string>("Endpoint") ?? "http://localhost:4317";
 var serviceName = otelSection.GetValue<string>("ServiceName") ?? assemblyName;

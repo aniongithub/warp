@@ -9,6 +9,9 @@
   "overrideCommand": true,
   "workspaceFolder": "/workspace/warp",
   "postAttachCommand": "dotnet restore && dotnet tool restore",
+  "features": {
+    "ghcr.io/jckimble/devcontainer-features/ngrok:3": {}
+  },
   "customizations": {
     "vscode": {
       "extensions": [

@@ -2,7 +2,7 @@
 <html>
 <head>
     <title>Memory Alpha Chat</title>
-    <script src="http://localhost:8420/js.stripe.com/v3/"></script>
+    <script src="https://js.stripe.com/v3/"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -418,8 +418,8 @@
         
         // Initialize Stripe
         document.addEventListener('DOMContentLoaded', function() {
-            // Initialize Stripe with LocalStripe endpoint
-            stripe = Stripe('pk_test_localstripe'); // LocalStripe uses this as default publishable key
+            // Stripe publishable key will be injected server-side from environment variable
+            stripe = Stripe('{{STRIPE_PUBLISHABLE_KEY}}');
             elements = stripe.elements();
             
             // Create card element

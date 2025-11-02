@@ -7,3 +7,5 @@ services:
       - RUN_PLASMA=false
     volumes:
       - .:/workspace/warp # Mount our workspace folder
+    ports:
+      - "5004:5004"  # warp.latinum webhook endpoint

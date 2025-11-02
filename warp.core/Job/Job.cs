@@ -3,7 +3,7 @@ using Warp.Core.Data;
 namespace Warp.Core.Job;
 
 public class Job : IJob
-{
+{    
     public string Id { get; set; } = Guid.NewGuid().ToString();
     public JobStatus Status { get; set; } = JobStatus.Queued;
     public IUser? User { get; set; } = null;

@@ -18,7 +18,7 @@ public abstract class AsyncApiHandlerOptions : MiddlewareOptions
     public Dictionary<string, InputMapping> Input { get; set; } = new();
     public string UserIdHeader { get; set; } = "X-JWT-Email";
     public string Channel { get; set; } = string.Empty;
-    public string ConnectionString { get; set; } = "localhost:6379";
+    public string ConnectionString { get; set; } = "redis:6379";
     
     /// <summary>
     /// Global blob transform configuration applied to all file uploads automatically
@@ -153,9 +153,9 @@ public abstract class AsyncApiHandler<TOptions, TJobContext> : MiddlewareBase<TO
         };
     }
 
-    protected virtual async Task<string> GetSubmitResponse(Job job)
+    protected virtual async Task<object> GetSubmitResponse(Job job)
     {
-        return JsonSerializer.Serialize(new { job.Id, statusCode = 202 });
+        return new { job.Id, statusCode = 202 };
     }
 
     private async Task<IResult> HandleSubmit(HttpContext context, OperationContext operation)

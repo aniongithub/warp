@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
@@ -17,10 +16,8 @@ namespace Warp.Latinum.Middleware.Stripe;
 public class StripePaymentOptions : AsyncApiHandlerOptions
 {
     public decimal CurrencyMultiplier { get; set; } = 1000; // Default: $1 = 1000 quota units
-    public string? WebhookUrl { get; set; }
     public string StripeSecretKey { get; set; } = string.Empty;
     public string StripePublishableKey { get; set; } = string.Empty;
-    public string WebhookSecret { get; set; } = string.Empty;
     public string Currency { get; set; } = "usd";
     public int PaymentIntentExpirationMinutes { get; set; } = 30;
     public string StripeApiBase { get; set; } = "https://api.stripe.com"; // Default to real Stripe, can override for LocalStripe
@@ -73,15 +70,15 @@ public class StripePaymentMiddleware : AsyncApiHandler<StripePaymentOptions, Red
             ["amount"] = amount,
             ["quota_increase"] = quotaIncrease,
             ["payment_intent_id"] = paymentIntentId,
-            ["webhook_url"] = Options.WebhookUrl ?? $"/webhook/stripe/payment/{Guid.NewGuid()}",
             ["quota_type"] = "prepaid",
             ["quota_name"] = "credits",
             ["client_secret"] = clientSecret
         };
 
-        // Create the job with enhanced parameters
+        // Create the job using payment intent ID as the job ID
         var job = new Job
         {
+            Id = paymentIntentId, // Use payment intent ID as job ID
             User = user,
             QueuedAt = DateTime.UtcNow,
             Status = JobStatus.Queued,
@@ -98,19 +95,16 @@ public class StripePaymentMiddleware : AsyncApiHandler<StripePaymentOptions, Red
         return job;
     }
 
-    protected override async Task<string> GetSubmitResponse(Job job)
+    protected override async Task<object> GetSubmitResponse(Job job)
     {
         // Return payment-specific response with client_secret
-        var response = new
-        {
+        return new {
             client_secret = job.Parameters["client_secret"],
             payment_intent_id = job.Parameters["payment_intent_id"],
             job_id = job.Id,
             amount = job.Parameters["amount"],
             quota_increase = job.Parameters["quota_increase"]
         };
-
-        return JsonSerializer.Serialize(response);
     }
 
     private async Task<string> CreateStripePaymentIntent(string userId, decimal amount, Dictionary<string, object?> extractedInputs)
@@ -127,9 +121,10 @@ public class StripePaymentMiddleware : AsyncApiHandler<StripePaymentOptions, Red
             {
                 Amount = amountInCents,
                 Currency = Options.Currency,
+                PaymentMethodTypes = new List<string> { "card" },
                 Metadata = new Dictionary<string, string>
                 {
-                    ["user_id"] = userId,
+                    // ["user_id"] = userId,
                     ["quota_increase"] = ((int)(amount * Options.CurrencyMultiplier)).ToString()
                 }
             };

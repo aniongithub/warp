@@ -165,6 +165,19 @@
             }
         },
         {
+            "name": "Warp.Latinum (monetization)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp.latinum/bin/Debug/net9.0/warp.latinum.dll",
+            "env": {
+                "WARP_CONFIG_BASE_DIR": "./examples/monetization" // This is all we need to configure
+            },
+            "presentation": {
+                "hidden": true
+            }
+        },
+        {
             "name": "Chat (monetization)",
             "type": "debugpy",
             "request": "launch",
@@ -184,22 +197,34 @@
         },
         {
             "name": "Warp JWT & ApiKeys",
-            "configurations": ["Warp (apikeys)", "DevApi (apikeys)"],
+            "configurations": [
+                "Warp (apikeys)", 
+                "DevApi (apikeys)"],
             "stopAll": true
         },
         {
             "name": "Warp Permissions & Quotas",
-            "configurations": ["Warp (quotas)", "DevApi (quotas)", "AdminApi (quotas)"],
+            "configurations": [
+                "Warp (quotas)", 
+                "DevApi (quotas)", 
+                "AdminApi (quotas)"],
             "stopAll": true
         },
         {
             "name": "Warp Async",
-            "configurations": ["Warp (async)", "Warp.Plasma (async)", "Chat (async)"],
+            "configurations": [
+                "Warp (async)", 
+                "Warp.Plasma (async)", 
+                "Chat (async)"],
             "stopAll": true
         },
         {
             "name": "Warp Monetization",
-            "configurations": ["Warp (monetization)", "Warp.Plasma (monetization)", "Chat (monetization)"],
+            "configurations": [
+                "Warp (monetization)", 
+                "Warp.Plasma (monetization)", 
+                "Warp.Latinum (monetization)", 
+                "Chat (monetization)"],
             "stopAll": true
         }
     ]

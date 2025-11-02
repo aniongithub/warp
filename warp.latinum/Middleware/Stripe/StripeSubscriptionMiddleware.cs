@@ -68,18 +68,15 @@ public class StripeSubscriptionMiddleware : AsyncApiHandler<StripeSubscriptionOp
         return job;
     }
 
-    protected override async Task<string> GetSubmitResponse(Job job)
+    protected override async Task<object> GetSubmitResponse(Job job)
     {
         // Return subscription-specific response with checkout URL
-        var response = new
-        {
+        return new {
             session_id = job.Parameters["session_id"],
             checkout_url = job.Parameters["checkout_url"],
             job_id = job.Id,
             subscription_plan = job.Parameters["subscription_plan"]
         };
-
-        return JsonSerializer.Serialize(response);
     }
 
     private async Task<string> CreateStripeSubscriptionSession(string userId, Dictionary<string, object?> extractedInputs)
