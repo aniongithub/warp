@@ -23,7 +23,7 @@ Jobs:
           Options:
             QuotaName: "free_quota"
             QuotaType: "prepaid" # Prepaid quota type means we set a fixed quota and decrement it
-            DefaultQuota: 5000 # Default quota for new users (5000 tokens until reset)
+            QuotaLimit: 5000 # Default quota for new users (5000 tokens until reset)
 
       Postdispatch:
         - Type: "Warp.Dilithium.Middleware.JsonResponseToHeaderTransform, warp.dilithium"

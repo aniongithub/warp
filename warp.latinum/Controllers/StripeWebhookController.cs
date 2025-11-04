@@ -1,8 +1,8 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
-
 using Microsoft.Extensions.Options;
 using Warp.Core.Data;
+using Warp.Core.Extensions;
 using Warp.Core.Job;
 using Warp.Core.Job.Contexts;
 using Warp.Latinum.Attributes;
@@ -39,10 +39,21 @@ public class StripeWebhookController : ControllerBase
             _logger.LogInformation("Received subscription webhook for job {JobId}", jobId);
 
             Job? job = null;
-            foreach (JobStatus status in Enum.GetValues(typeof(JobStatus)))
+            try
             {
-                job = await _jobContext.LookupJobAsync<Job>(jobId, status, "");
-                if (job != null) break;
+                job = await _jobContext.LookupJobAsync<Job>(jobId, JobStatus.Queued, "");
+            }
+            catch (KeyNotFoundException)
+            {
+                // Job not found in Queued status, might already be processed
+                try
+                {
+                    job = await _jobContext.LookupJobAsync<Job>(jobId, JobStatus.Completed, "");
+                }
+                catch (KeyNotFoundException)
+                {
+                    // Job not found in any expected status
+                }
             }
             
             if (job == null)
@@ -51,11 +62,20 @@ public class StripeWebhookController : ControllerBase
                 return NotFound($"Job {jobId} not found");
             }
 
+            // If job is already completed, skip processing (idempotency)
+            if (job.Status == JobStatus.Completed)
+            {
+                _logger.LogInformation("Subscription webhook for {JobId} already processed, skipping", jobId);
+                return Ok(new { status = "already_processed", job_id = jobId, message = "Webhook already processed" });
+            }
+
             var subscriptionPlan = job.Parameters.TryGetValue("subscription_plan", out var planObj)
                 ? planObj?.ToString() ?? "basic"
                 : "basic";
 
-            await UpdateUserQuotaForSubscription(job.User?.Id ?? "", subscriptionPlan);
+            // Resolve key using the same logic as QuotaChecker
+            var key = ResolveKeyFromJob(job);
+            await UpdateUserQuotaForSubscription(key, subscriptionPlan);
 
             await _jobContext.UpdateJobAsync(job, JobStatus.Completed, 
                 output: JsonSerializer.Serialize(new { status = "subscription_activated", plan = subscriptionPlan }));
@@ -111,18 +131,28 @@ public class StripeWebhookController : ControllerBase
 
             _logger.LogInformation("Received payment webhook for payment intent {PaymentIntentId}", paymentIntentId);
 
-            // Look up job using payment intent ID as job ID
-            Job? job = null;
-            foreach (JobStatus status in Enum.GetValues(typeof(JobStatus)))
+            // Try to atomically update job from Queued to Completed status
+            // Only the first webhook to succeed will actually process the payment
+            var wasUpdated = await _jobContext.UpdateJobStatusAsync(paymentIntentId, JobStatus.Queued, JobStatus.Completed, "*", 
+                output: JsonSerializer.Serialize(new { status = "payment_processed" }));
+
+            if (!wasUpdated)
             {
-                job = await _jobContext.LookupJobAsync<Job>(paymentIntentId, status, "*");
-                if (job != null) break;
+                _logger.LogInformation("Payment webhook for {PaymentIntentId} already processed by another request, skipping", paymentIntentId);
+                return Ok(new { status = "already_processed", job_id = paymentIntentId, message = "Webhook already processed" });
             }
-            
-            if (job == null)
+
+            // Only the winning webhook gets here - now we can safely process the payment
+            // First, get the job to extract payment details
+            Job job;
+            try
             {
-                _logger.LogWarning("Job not found for payment intent {PaymentIntentId}", paymentIntentId);
-                return NotFound($"Job not found for payment intent {paymentIntentId}");
+                job = await _jobContext.LookupJobAsync<Job>(paymentIntentId, JobStatus.Completed, "*");
+            }
+            catch (KeyNotFoundException)
+            {
+                _logger.LogError("Job {PaymentIntenptId} not found after successful status update - this should not happen", paymentIntentId);
+                return StatusCode(500, "Internal server error");
             }
 
             var quotaIncrease = job.Parameters.TryGetValue("quota_increase", out var quotaObj) && 
@@ -132,10 +162,9 @@ public class StripeWebhookController : ControllerBase
                 ? quotaNameObj?.ToString() ?? "credits"
                 : "credits";
 
-            await UpdateUserQuotaForPayment(job.User?.Id ?? "", quotaName, quotaIncrease);
-
-            await _jobContext.UpdateJobAsync(job, JobStatus.Completed, 
-                output: JsonSerializer.Serialize(new { status = "payment_processed", quota_name = quotaName, quota_added = quotaIncrease }));
+            // Resolve key using the same logic as QuotaChecker
+            var key = ResolveKeyFromJob(job);            
+            await UpdateUserQuotaForPayment(key, quotaName, quotaIncrease);
 
             _logger.LogInformation("Successfully processed payment webhook for payment intent {PaymentIntentId}", paymentIntentId);
 
@@ -196,6 +225,19 @@ public class StripeWebhookController : ControllerBase
         }
 
         _logger.LogInformation("Increased {QuotaName} quota for user {UserId} by {Increase}", quotaName, userId, quotaIncrease);
+    }
+
+    /// <summary>
+    /// Resolves the key from job headers using the same logic as QuotaChecker.
+    /// This ensures we update the same quota that was originally checked.
+    /// </summary>
+    private string ResolveKeyFromJob(Job job)
+    {
+        // Use the same key resolution logic as QuotaChecker
+        var key = HttpContextExtensions.ResolveKey(job.Headers ?? new Dictionary<string, string>(), _options.KeyHeaders);
+        
+        // Fallback to user ID if no headers match
+        return string.IsNullOrEmpty(key) ? job.User?.Id ?? "" : key;
     }
 
 

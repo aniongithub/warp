@@ -24,6 +24,7 @@ public interface IJobContext
     Task<JobStatus> GetJobStatusAsync(string id, string userId);
     Task<IAsyncEnumerable<T>> ListJobs<T>(string userId, JobStatus status, int batchSize) where T : class, IJob;
     Task UpdateJobAsync<T>(T job, JobStatus newStatus, string? error = null, string? output = null) where T : class, IJob;
+    Task<bool> UpdateJobStatusAsync(string jobId, JobStatus fromStatus, JobStatus toStatus, string userId, string? error = null, string? output = null);
     
     // Serialization methods for job persistence
     string SerializeJob<T>(T job) where T : class, IJob;

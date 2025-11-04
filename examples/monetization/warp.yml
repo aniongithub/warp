@@ -41,9 +41,9 @@ ReverseProxy:
           # Ensure quota is available for job submission
           - Type: "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium"
             Options:
-              QuotaName: "free_quota"
+              QuotaName: "slips"
               QuotaType: "prepaid" # Prepaid quota type means we set a fixed quota and decrement it
-              DefaultQuota: 5000 # Default quota for new users (5000 tokens until reset)
+              QuotaLimit: 5000 # Default quota for new users (5000 tokens until reset)
 
         Predispatch:
           # Validate requests for job submission only
@@ -90,3 +90,4 @@ ReverseProxy:
               Currency: "usd"
               PaymentIntentExpirationMinutes: 30
               StripeApiBase: "${STRIPE_API_BASE:https://api.stripe.com}"
+              QuotaName: "slips" # The quota we will add tokens to on successful payment

@@ -22,6 +22,8 @@ public class StripePaymentOptions : AsyncApiHandlerOptions
     public int PaymentIntentExpirationMinutes { get; set; } = 30;
     public string StripeApiBase { get; set; } = "https://api.stripe.com"; // Default to real Stripe, can override for LocalStripe
     // ConnectionString and Channel are inherited from AsyncApiHandlerOptions
+    public string QuotaType { get; set; } = "prepaid";
+    public string? QuotaName { get; set; }
 }
 
 public class StripePaymentMiddleware : AsyncApiHandler<StripePaymentOptions, RedisJobContext>
@@ -35,6 +37,9 @@ public class StripePaymentMiddleware : AsyncApiHandler<StripePaymentOptions, Red
         StripePaymentOptions options) 
         : base(name, logger, dataContext, options)
     {
+        if (string.IsNullOrEmpty(options.QuotaName))
+            throw new ArgumentException("QuotaName must be specified in StripePaymentOptions");
+
         // Configure Stripe client with custom base URL for LocalStripe
         var stripeClient = new StripeClient(
             apiKey: options.StripeSecretKey,
@@ -47,10 +52,10 @@ public class StripePaymentMiddleware : AsyncApiHandler<StripePaymentOptions, Red
     protected override async Task<Job> CreateJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo, TracingContext tracingContext)
     {
         // Extract and validate payment amount
-        if (!extractedInputs.TryGetValue("amount", out var amountObj) || 
+        if (!extractedInputs.TryGetValue("amount", out var amountObj) ||
             !decimal.TryParse(amountObj?.ToString(), out var amount))
             throw new ArgumentException("Valid amount is required");
-
+        
         if (amount <= 0)
             throw new ArgumentException("Amount must be greater than zero");
 
@@ -70,8 +75,8 @@ public class StripePaymentMiddleware : AsyncApiHandler<StripePaymentOptions, Red
             ["amount"] = amount,
             ["quota_increase"] = quotaIncrease,
             ["payment_intent_id"] = paymentIntentId,
-            ["quota_type"] = "prepaid",
-            ["quota_name"] = "credits",
+            ["quota_type"] = base.Options.QuotaType,
+            ["quota_name"] = base.Options.QuotaName,
             ["client_secret"] = clientSecret
         };
 

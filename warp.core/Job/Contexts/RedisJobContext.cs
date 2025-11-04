@@ -221,4 +221,58 @@ public class RedisJobContext : JobContextBase
         await _db.KeyDeleteAsync(oldKey);
         await _db.ListRemoveAsync(QueueKey(oldStatus), job.Id);
     }
+
+    public override async Task<bool> UpdateJobStatusAsync(string jobId, JobStatus fromStatus, JobStatus toStatus, string userId, string? error = null, string? output = null)
+    {
+        EnsureInitialized();
+        
+        // Find the job with the from status (using wildcard if userId is "*")
+        Job? job = null;
+        try
+        {
+            job = await LookupJobAsync<Job>(jobId, fromStatus, userId);
+        }
+        catch (KeyNotFoundException)
+        {
+            // Job not found in the expected status
+            return false;
+        }
+        
+        if (job == null)
+            return false;
+            
+        // Get the actual user ID for key construction
+        var actualUserId = job.User?.Id ?? "";
+        if (string.IsNullOrEmpty(actualUserId))
+            return false;
+            
+        var fromKey = JobKey(jobId, fromStatus, actualUserId);
+        var toKey = JobKey(jobId, toStatus, actualUserId);
+        
+        // Use Redis transaction for atomicity
+        var transaction = _db!.CreateTransaction();
+        
+        // Only proceed if the from key still exists (ensures atomicity)
+        transaction.AddCondition(Condition.KeyExists(fromKey));
+        
+        // Update job properties
+        job.Status = toStatus;
+        job.EndedAt = DateTime.UtcNow;
+        
+        if (!string.IsNullOrEmpty(error))
+            job.Error = error;
+        
+        if (!string.IsNullOrEmpty(output))
+            job.Output = output;
+        
+        // Queue the operations
+        _ = transaction.StringSetAsync(toKey, SerializeJob(job));
+        _ = transaction.ListRightPushAsync(QueueKey(toStatus), jobId);
+        _ = transaction.KeyDeleteAsync(fromKey);
+        _ = transaction.ListRemoveAsync(QueueKey(fromStatus), jobId);
+        
+        // Execute atomically
+        var success = await transaction.ExecuteAsync();
+        return success;
+    }
 }

@@ -16,11 +16,6 @@ namespace Warp.Latinum.Attributes;
 public class StripeControllerAttribute : PaymentControllerAttribute
 {
     /// <summary>
-    /// Name of the webhook to register
-    /// </summary>
-    public string? WebhookName { get; set; }
-
-    /// <summary>
     /// Array of Stripe events to listen for (optional)
     /// </summary>
     public string[]? Events { get; set; }
@@ -82,9 +77,8 @@ public class StripeControllerAttribute : PaymentControllerAttribute
         // Add auth token if available
         if (!string.IsNullOrEmpty(options.NgrokAuthToken))
         {
-            startInfo.Arguments = $"config add-authtoken {options.NgrokAuthToken} && {startInfo.Arguments}";
             startInfo.FileName = "bash";
-            startInfo.Arguments = $"-c \"ngrok {startInfo.Arguments}\"";
+            startInfo.Arguments = $"-c \"ngrok config add-authtoken {options.NgrokAuthToken} && ngrok http 5004 --log=stdout --log-level=info\"";
         }
 
         var process = Process.Start(startInfo);

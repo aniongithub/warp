@@ -43,6 +43,7 @@ public abstract class JobContextBase : IJobContext
     public abstract Task<JobStatus> GetJobStatusAsync(string id, string userId);
     public abstract Task<IAsyncEnumerable<T>> ListJobs<T>(string userId, JobStatus status, int batchSize) where T : class, IJob;
     public abstract Task UpdateJobAsync<T>(T job, JobStatus newStatus, string? error = null, string? output = null) where T : class, IJob;
+    public abstract Task<bool> UpdateJobStatusAsync(string jobId, JobStatus fromStatus, JobStatus toStatus, string userId, string? error = null, string? output = null);
 }
 
 /// <summary>

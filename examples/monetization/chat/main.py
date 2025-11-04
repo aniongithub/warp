@@ -97,7 +97,7 @@ async def webhook(payload: dict):
             message = {
                 "status": "payment_processed",
                 "quota_added": payload.get("quota_increase", payload.get("quota_added")),
-                "quota_name": payload.get("quota_name", "credits")
+                "quota_name": payload.get("quota_name", "slips")
             }
         else:
             # Extract the result from the webhook payload (for regular chat responses)

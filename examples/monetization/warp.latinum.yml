@@ -20,3 +20,4 @@ Controllers:
     Options:
       NgrokAuthToken: "${NGROK_AUTH_TOKEN:}"
       StripeSecretKey: "${STRIPE_SECRET_KEY:}"
+      QuotaName: "slips" # The quota we will add tokens to on successful payment
