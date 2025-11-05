@@ -1,0 +1,32 @@
+# Stripe Subscription Plans Configuration
+# This file defines the subscription tiers available across the monetization example
+- PlanId: "basic"
+  ProductName: "Warp Basic Plan"
+  ProductDescription: "Basic API access with 10K requests/month"
+  Amount: 9.99
+  Currency: "usd"
+  Interval: "month"
+  IntervalCount: 1
+  QuotaName: "slips"
+  QuotaType: "postpaid"
+  # StripeProductId and StripePriceId will be populated automatically by the controller attribute
+  
+- PlanId: "pro"
+  ProductName: "Warp Pro Plan"
+  ProductDescription: "Pro API access with 100K requests/month"
+  Amount: 29.99
+  Currency: "usd"
+  Interval: "month"
+  IntervalCount: 1
+  QuotaName: "slips"
+  QuotaType: "postpaid"
+  
+- PlanId: "enterprise"
+  ProductName: "Warp Enterprise Plan"
+  ProductDescription: "Unlimited API access with priority support"
+  Amount: 99.99
+  Currency: "usd"
+  Interval: "month"
+  IntervalCount: 1
+  QuotaName: "slips"
+  QuotaType: "postpaid"

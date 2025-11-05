@@ -15,15 +15,27 @@ namespace Warp.Latinum.Middleware.Stripe;
 
 public class StripePaymentOptions : AsyncApiHandlerOptions
 {
+    // Stripe payment processing configuration
     public decimal CurrencyMultiplier { get; set; } = 1000; // Default: $1 = 1000 quota units
     public string StripeSecretKey { get; set; } = string.Empty;
     public string StripePublishableKey { get; set; } = string.Empty;
     public string Currency { get; set; } = "usd";
     public int PaymentIntentExpirationMinutes { get; set; } = 30;
     public string StripeApiBase { get; set; } = "https://api.stripe.com"; // Default to real Stripe, can override for LocalStripe
-    // ConnectionString and Channel are inherited from AsyncApiHandlerOptions
+    
+    // Quota management configuration
     public string QuotaType { get; set; } = "prepaid";
     public string? QuotaName { get; set; }
+    
+    // Webhook configuration (for controller attribute)
+    public string CallbackUrl { get; set; } = "http://warp:5004/webhook/stripe/payment";
+    public string Secret { get; set; } = "whsec_test_secret";
+    public string[] Events { get; set; } = new[] { "payment_intent.succeeded", "payment_intent.payment_failed" };
+    public List<string> KeyHeaders { get; set; } = new() { "X-JWT-Email", "X-Api-Key" };
+    public string? NgrokAuthToken { get; set; }
+    public string WebhookName { get; set; } = "Warp Monetization Webhook";
+    
+    // Note: ConnectionString and Channel are inherited from AsyncApiHandlerOptions
 }
 
 public class StripePaymentMiddleware : AsyncApiHandler<StripePaymentOptions, RedisJobContext>

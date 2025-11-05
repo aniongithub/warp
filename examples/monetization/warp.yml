@@ -91,3 +91,38 @@ ReverseProxy:
               PaymentIntentExpirationMinutes: 30
               StripeApiBase: "${STRIPE_API_BASE:https://api.stripe.com}"
               QuotaName: "slips" # The quota we will add tokens to on successful payment
+
+    # Subscription route - handles Stripe subscription checkout
+    stripe_subscriptions:
+      ClusterId: "memoryalpha_cluster"  # Can reuse cluster, middleware handles it
+      Match:
+        Path: "/subscription/{**catch-all}"
+      Metadata:
+        Preprocess:
+          # User identification for subscription processing
+          - Type: "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium"
+            Options:
+              UserIdHeader: "X-JWT-Email"
+              CreateUserIfNotFound: true
+              DefaultPermissions:
+                - "user"
+
+        Predispatch:
+          # Handle Stripe subscription processing
+          - Type: "Warp.Latinum.Middleware.Stripe.StripeSubscriptionMiddleware, warp.latinum"
+            Options:
+              # Subscription plans configuration (from shared file)
+              Plans:
+                $include: stripe-plans.yml
+
+              ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379,defaultDatabase=0}"
+              Channel: "stripe_subscription_async"
+              MaxConcurrentDispatches: 5
+              DispatchTimeoutMs: 60000
+              UserIdHeader: "X-JWT-Email"              
+              StripeSecretKey: "${STRIPE_SECRET_KEY}"
+              StripePublishableKey: "${STRIPE_PUBLISHABLE_KEY}"
+              StripeApiBase: "${STRIPE_API_BASE:https://api.stripe.com}"
+              SuccessUrl: "${STRIPE_SUCCESS_URL:http://0.0.0.0:5004/stripe/success}"
+              CancelUrl: "${STRIPE_CANCEL_URL:http://0.0.0.0:5004/stripe/cancel}"
+              SessionExpirationMinutes: 30

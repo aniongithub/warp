@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
-using Warp.Latinum.Controllers;
+using Warp.Latinum.Middleware.Stripe;
 
 namespace Warp.Latinum.Attributes;
 
@@ -13,7 +13,7 @@ namespace Warp.Latinum.Attributes;
 /// In DEBUG: Automatically starts ngrok and registers webhooks with Stripe API.
 /// In RELEASE: Uses configured webhook URL for deployment.
 /// </summary>
-public class StripeControllerAttribute : PaymentControllerAttribute
+public class StripePaymentControllerAttribute : PaymentControllerAttribute
 {
     /// <summary>
     /// Array of Stripe events to listen for (optional)
@@ -23,10 +23,10 @@ public class StripeControllerAttribute : PaymentControllerAttribute
     public override async Task ConfigureAsync(IServiceProvider serviceProvider, IConfigurationSection optionsSection)
     {
         var httpClient = serviceProvider.GetRequiredService<HttpClient>();
-        var logger = serviceProvider.GetRequiredService<ILogger<StripeControllerAttribute>>();
+        var logger = serviceProvider.GetRequiredService<ILogger<StripePaymentControllerAttribute>>();
 
         // Bind configuration to options
-        var options = new StripeWebhookOptions();
+        var options = new StripePaymentOptions();
         optionsSection.Bind(options);
 
 #if DEBUG
@@ -36,7 +36,7 @@ public class StripeControllerAttribute : PaymentControllerAttribute
 #endif
     }
 
-    private async Task ConfigureDebugWebhookAsync(HttpClient httpClient, ILogger logger, StripeWebhookOptions options)
+    private async Task ConfigureDebugWebhookAsync(HttpClient httpClient, ILogger logger, StripePaymentOptions options)
     {
         logger.LogInformation("DEBUG mode: Starting ngrok and registering webhook with Stripe API");
 
@@ -47,7 +47,7 @@ public class StripeControllerAttribute : PaymentControllerAttribute
         await RegisterWebhookWithStripeAsync(httpClient, logger, options, ngrokUrl);
     }
 
-    private async Task ConfigureProductionWebhookAsync(HttpClient httpClient, ILogger logger, StripeWebhookOptions options)
+    private async Task ConfigureProductionWebhookAsync(HttpClient httpClient, ILogger logger, StripePaymentOptions options)
     {
         logger.LogInformation("PRODUCTION mode: Using configured webhook URL");
         
@@ -59,7 +59,7 @@ public class StripeControllerAttribute : PaymentControllerAttribute
         await RegisterWebhookWithStripeAsync(httpClient, logger, options, options.CallbackUrl);
     }
 
-    private async Task<string> StartNgrokAsync(HttpClient httpClient, ILogger logger, StripeWebhookOptions options)
+    private async Task<string> StartNgrokAsync(HttpClient httpClient, ILogger logger, StripePaymentOptions options)
     {
         logger.LogInformation("Starting ngrok tunnel for port 5004...");
 
@@ -122,17 +122,73 @@ public class StripeControllerAttribute : PaymentControllerAttribute
         }
     }
 
-    private async Task RegisterWebhookWithStripeAsync(HttpClient httpClient, ILogger logger, StripeWebhookOptions options, string webhookUrl)
+    private async Task RegisterWebhookWithStripeAsync(HttpClient httpClient, ILogger logger, StripePaymentOptions options, string webhookUrl)
     {
         logger.LogInformation("Registering webhook with Stripe API: {WebhookUrl}", webhookUrl);
 
         var fullWebhookUrl = $"{webhookUrl}/stripe/payment";
         var events = Events ?? options.Events ?? new[] { "payment_intent.succeeded", "payment_intent.payment_failed" };
+        var webhookName = options.WebhookName; // Use configurable webhook name
 
-        // Create form data for Stripe API
+        // Use Stripe secret key for authentication
+        var authBytes = Encoding.ASCII.GetBytes($"{options.StripeSecretKey}:");
+        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", Convert.ToBase64String(authBytes));
+
+        // Step 1: Check if webhook already exists
+        var existingWebhookId = await FindExistingWebhookAsync(httpClient, logger, webhookName);
+
+        if (!string.IsNullOrEmpty(existingWebhookId))
+        {
+            // Step 2a: Update existing webhook
+            logger.LogInformation("Updating existing Stripe webhook {WebhookId} with URL: {WebhookUrl}", existingWebhookId, fullWebhookUrl);
+            await UpdateWebhookAsync(httpClient, logger, existingWebhookId, fullWebhookUrl, events);
+        }
+        else
+        {
+            // Step 2b: Create new webhook
+            logger.LogInformation("Creating new Stripe webhook with URL: {WebhookUrl}", fullWebhookUrl);
+            await CreateWebhookAsync(httpClient, logger, fullWebhookUrl, events, webhookName);
+        }
+    }
+
+    private async Task<string?> FindExistingWebhookAsync(HttpClient httpClient, ILogger logger, string webhookName)
+    {
+        try
+        {
+            var response = await httpClient.GetAsync("https://api.stripe.com/v1/webhook_endpoints?limit=100");
+            if (!response.IsSuccessStatusCode)
+            {
+                logger.LogWarning("Failed to list existing webhooks: {StatusCode}", response.StatusCode);
+                return null;
+            }
+
+            var jsonResponse = await response.Content.ReadAsStringAsync();
+            var webhooksData = JsonSerializer.Deserialize<JsonElement>(jsonResponse);
+
+            foreach (var webhook in webhooksData.GetProperty("data").EnumerateArray())
+            {
+                if (webhook.TryGetProperty("metadata", out var metadata) &&
+                    metadata.TryGetProperty("name", out var nameElement) &&
+                    nameElement.GetString() == webhookName)
+                {
+                    return webhook.GetProperty("id").GetString();
+                }
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Error checking for existing webhooks");
+            return null;
+        }
+    }
+
+    private async Task UpdateWebhookAsync(HttpClient httpClient, ILogger logger, string webhookId, string webhookUrl, string[] events)
+    {
         var formData = new List<KeyValuePair<string, string>>
         {
-            new("url", fullWebhookUrl)
+            new("url", webhookUrl)
         };
 
         foreach (var evt in events)
@@ -141,28 +197,55 @@ public class StripeControllerAttribute : PaymentControllerAttribute
         }
 
         var content = new FormUrlEncodedContent(formData);
+        var response = await httpClient.PostAsync($"https://api.stripe.com/v1/webhook_endpoints/{webhookId}", content);
 
-        // Use Stripe secret key for authentication
-        var authBytes = Encoding.ASCII.GetBytes($"{options.StripeSecretKey}:");
-        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", Convert.ToBase64String(authBytes));
+        if (response.IsSuccessStatusCode)
+        {
+            logger.LogInformation("Successfully updated Stripe webhook {WebhookId}: {WebhookUrl}", webhookId, webhookUrl);
+        }
+        else
+        {
+            var errorContent = await response.Content.ReadAsStringAsync();
+            logger.LogWarning("Failed to update Stripe webhook {WebhookId}: {StatusCode} - {Error}", webhookId, response.StatusCode, errorContent);
+            
+            if (!System.Diagnostics.Debugger.IsAttached)
+            {
+                throw new InvalidOperationException($"Failed to update Stripe webhook: {response.StatusCode} - {errorContent}");
+            }
+        }
+    }
 
+    private async Task CreateWebhookAsync(HttpClient httpClient, ILogger logger, string webhookUrl, string[] events, string webhookName)
+    {
+        var formData = new List<KeyValuePair<string, string>>
+        {
+            new("url", webhookUrl),
+            new("description", webhookName), // Display name in Stripe dashboard
+            new("metadata[name]", webhookName) // Add metadata for identification
+        };
+
+        foreach (var evt in events)
+        {
+            formData.Add(new KeyValuePair<string, string>("enabled_events[]", evt));
+        }
+
+        var content = new FormUrlEncodedContent(formData);
         var response = await httpClient.PostAsync("https://api.stripe.com/v1/webhook_endpoints", content);
 
         if (response.IsSuccessStatusCode)
         {
             var responseContent = await response.Content.ReadAsStringAsync();
-            logger.LogInformation("Successfully registered Stripe webhook: {WebhookUrl}", fullWebhookUrl);
+            logger.LogInformation("Successfully created Stripe webhook: {WebhookUrl}", webhookUrl);
             logger.LogDebug("Stripe API response: {Response}", responseContent);
         }
         else
         {
             var errorContent = await response.Content.ReadAsStringAsync();
-            logger.LogWarning("Failed to register Stripe webhook: {StatusCode} - {Error}", response.StatusCode, errorContent);
+            logger.LogWarning("Failed to create Stripe webhook: {StatusCode} - {Error}", response.StatusCode, errorContent);
             
-            // Don't throw in DEBUG mode - the app should still work even if webhook registration fails
             if (!System.Diagnostics.Debugger.IsAttached)
             {
-                throw new InvalidOperationException($"Failed to register Stripe webhook: {response.StatusCode} - {errorContent}");
+                throw new InvalidOperationException($"Failed to create Stripe webhook: {response.StatusCode} - {errorContent}");
             }
         }
     }

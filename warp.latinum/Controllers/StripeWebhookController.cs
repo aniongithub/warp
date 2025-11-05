@@ -6,20 +6,22 @@ using Warp.Core.Extensions;
 using Warp.Core.Job;
 using Warp.Core.Job.Contexts;
 using Warp.Latinum.Attributes;
+using Warp.Latinum.Middleware.Stripe;
 
 namespace Warp.Latinum.Controllers;
 
 [ApiController]
 [Route("/stripe")]
-[StripeController]
+[StripePaymentController(Events = new[] { "payment_intent.succeeded", "payment_intent.payment_failed" })]
+[StripeSubscriptionController(Events = new[] { "checkout.session.completed", "customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted", "invoice.payment_succeeded", "invoice.payment_failed" })]
 public class StripeWebhookController : ControllerBase
 {
     private readonly IDataContext _dataContext;
     private readonly ILogger<StripeWebhookController> _logger;
-    private readonly StripeWebhookOptions _options;
+    private readonly StripePaymentOptions _options;
     private readonly IJobContext _jobContext;
 
-    public StripeWebhookController(IDataContext dataContext, ILogger<StripeWebhookController> logger, IOptions<StripeWebhookOptions> options)
+    public StripeWebhookController(IDataContext dataContext, ILogger<StripeWebhookController> logger, IOptions<StripePaymentOptions> options)
     {
         _dataContext = dataContext;
         _logger = logger;
@@ -38,23 +40,8 @@ public class StripeWebhookController : ControllerBase
         {
             _logger.LogInformation("Received subscription webhook for job {JobId}", jobId);
 
-            Job? job = null;
-            try
-            {
-                job = await _jobContext.LookupJobAsync<Job>(jobId, JobStatus.Queued, "");
-            }
-            catch (KeyNotFoundException)
-            {
-                // Job not found in Queued status, might already be processed
-                try
-                {
-                    job = await _jobContext.LookupJobAsync<Job>(jobId, JobStatus.Completed, "");
-                }
-                catch (KeyNotFoundException)
-                {
-                    // Job not found in any expected status
-                }
-            }
+            // Find the subscription job in the subscription channel
+            Job? job = await FindSubscriptionJob(jobId);
             
             if (job == null)
             {
@@ -240,5 +227,83 @@ public class StripeWebhookController : ControllerBase
         return string.IsNullOrEmpty(key) ? job.User?.Id ?? "" : key;
     }
 
+    /// <summary>
+    /// Finds a subscription job in the subscription channel.
+    /// Subscription jobs are always in the stripe_subscription_async channel.
+    /// </summary>
+    private async Task<Job?> FindSubscriptionJob(string sessionId)
+    {
+        // Subscription jobs are always in the subscription channel
+        var subscriptionJobContext = new RedisJobContext();
+        subscriptionJobContext.Initialize(_options.ConnectionString, "stripe_subscription_async");
+
+        try
+        {
+            return await subscriptionJobContext.LookupJobAsync<Job>(sessionId, JobStatus.Queued, "*");
+        }
+        catch (KeyNotFoundException) { }
+
+        try
+        {
+            return await subscriptionJobContext.LookupJobAsync<Job>(sessionId, JobStatus.Completed, "*");
+        }
+        catch (KeyNotFoundException) { }
+
+        return null;
+    }
+
+    [HttpGet("success")]
+    public async Task<IActionResult> Success([FromQuery] string session_id)
+    {
+        try
+        {
+            _logger.LogInformation("User reached success page for session {SessionId}", session_id);
+
+            // Look up the subscription job (session_id is the job ID for subscriptions)
+            Job? job = await FindSubscriptionJob(session_id);
+            
+            if (job != null)
+            {
+                var subscriptionPlan = job.Parameters.TryGetValue("subscription_plan", out var planObj)
+                    ? planObj?.ToString() ?? "basic"
+                    : "basic";
+
+                return Ok(new { 
+                    message = "Subscription successful!", 
+                    session_id = session_id,
+                    subscription_plan = subscriptionPlan,
+                    status = job.Status.ToString()
+                });
+            }
+
+            // Fallback response if job not found
+            return Ok(new { 
+                message = "Subscription checkout completed!", 
+                session_id = session_id,
+                note = "Your subscription will be activated once payment is confirmed."
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing success page for session {SessionId}", session_id);
+            return Ok(new { 
+                message = "Subscription checkout completed!", 
+                session_id = session_id,
+                note = "Your subscription will be activated once payment is confirmed."
+            });
+        }
+    }
+
+    [HttpGet("cancel")]
+    public IActionResult Cancel([FromQuery] string session_id)
+    {
+        _logger.LogInformation("User canceled checkout for session {SessionId}", session_id);
+        
+        return Ok(new { 
+            message = "Subscription canceled", 
+            session_id = session_id,
+            note = "No charges were made. You can try again anytime."
+        });
+    }
 
 }
