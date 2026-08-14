@@ -117,3 +117,6 @@ spec/
 swagger-dummy.json
 
 .easyRedis.redis
+
+# devcontainer CLI generated lockfile
+.devcontainer/devcontainer-lock.json
