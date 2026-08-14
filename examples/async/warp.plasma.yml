@@ -12,6 +12,13 @@ Jobs:
     MaxConcurrentJobs: 3
     PollingIntervalMs: 2000
     Endpoint: "${MEMORYALPHA_RAG_API_ADDR:http://memoryalpha-rag-api:8000}"
+    # At-least-once retry policy. A transient dispatch failure (5xx / 408 / 429 / timeout / network
+    # error) requeues the job with exponential backoff up to MaxAttempts total attempts, after which
+    # it is dead-lettered (terminal Failed). Client errors (other 4xx) are not retried.
+    RetryPolicy:
+      MaxAttempts: 3
+      BackoffBaseSeconds: 5
+      BackoffMaxSeconds: 300
     Context:
       Type: "Warp.Core.Job.Contexts.RedisJobContext, warp.core"
       Options:

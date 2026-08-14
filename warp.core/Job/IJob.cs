@@ -10,6 +10,7 @@ public interface IJob : IEntity
     DateTime? StartedAt { get; set; } // When the job started
     DateTime? EndedAt { get; set; } // When the job ended
     string? Error { get; set; } // Error message if failed
+    int Attempts { get; set; } // Number of dispatch attempts already made (for bounded retries)
 
     // Warp internal routing data
     string OriginalPath { get; set; } // The original async API path
