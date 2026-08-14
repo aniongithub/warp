@@ -10,6 +10,7 @@ namespace Warp.Dilithium.Middleware
     {
         public string UsageHeader { get; set; } = "X-Quota-Usage";
         public string QuotaHeader { get; set; } = "X-Quota-Id";
+        public string ReservedHeader { get; set; } = "X-Quota-Reserved";
         public float DefaultUsage { get; set; } = 1.0f;
         public bool OnlyOnSuccess { get; set; } = true;
         public List<int> SuccessStatusCodes { get; set; } = new() { 200, 201, 202, 204 };
@@ -36,22 +37,51 @@ namespace Warp.Dilithium.Middleware
                 return Results.Ok().Continue();
             }
 
-            // Check if we should update quota based on response status
-            if (Options.OnlyOnSuccess && !Options.SuccessStatusCodes.Contains(context.Response.StatusCode))
-            {
-                // Request failed, don't consume quota
-                return Results.Ok().Continue();
-            }
+            var succeeded = !Options.OnlyOnSuccess || Options.SuccessStatusCodes.Contains(context.Response.StatusCode);
 
-            // Determine usage amount
+            // Determine the actual usage amount (usually only known post-response, e.g. token counts).
             float usage = Options.DefaultUsage;
             if (context.Response.Headers.TryGetValue(Options.UsageHeader, out var usageHeaderValues))
             {
                 var usageHeaderValue = usageHeaderValues.FirstOrDefault();
-                if (!string.IsNullOrEmpty(usageHeaderValue) && float.TryParse(usageHeaderValue, out var parsedUsage))
+                if (!string.IsNullOrEmpty(usageHeaderValue) &&
+                    float.TryParse(usageHeaderValue, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsedUsage))
                 {
                     usage = parsedUsage;
                 }
+            }
+
+            // Reservation path: QuotaChecker already RESERVED an amount up-front (prepaid admission
+            // control). We must NOT consume again here - instead reconcile the reservation against the
+            // actual usage so the two together equal the true cost.
+            if (context.Request.Headers.TryGetValue(Options.ReservedHeader, out var reservedValues) &&
+                float.TryParse(reservedValues.FirstOrDefault(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var reserved))
+            {
+                if (!succeeded)
+                {
+                    // Request failed and we only bill successes: release the whole reservation.
+                    await DataContext.SettleQuotaAsync(quotaId, -reserved);
+                    Logger.LogDebug("QuotaUpdater: Released reservation of {Reserved} for failed request (quota ID: {QuotaId})",
+                        reserved, quotaId);
+                }
+                else
+                {
+                    // Settle the delta between what was reserved and what was actually used. Positive
+                    // charges the remainder, negative refunds the over-reservation, zero is a no-op.
+                    var delta = usage - reserved;
+                    await DataContext.SettleQuotaAsync(quotaId, delta);
+                    Logger.LogDebug("QuotaUpdater: Settled reservation for quota (ID: {QuotaId}); reserved {Reserved}, actual {Usage}, delta {Delta}",
+                        quotaId, reserved, usage, delta);
+                }
+
+                return Results.Ok().Continue();
+            }
+
+            // No reservation (e.g. postpaid, or QuotaChecker not run): record actual usage post-response.
+            if (!succeeded)
+            {
+                // Request failed, don't consume quota
+                return Results.Ok().Continue();
             }
 
             // Skip if no usage to record

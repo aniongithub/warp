@@ -295,6 +295,42 @@ public class FirestoreDataContext : IDataContext
         });
     }
 
+    public async Task SettleQuotaAsync(string quotaId, float delta)
+    {
+        var docRef = _db.Collection("quotas").Document(quotaId);
+
+        // A Firestore transaction re-runs on contention, guaranteeing the read-adjust-write is atomic.
+        // The reservation was already admitted, so the adjustment is unconditional; Used is floored at 0.
+        await _db.RunTransactionAsync(async transaction =>
+        {
+            var snapshot = await transaction.GetSnapshotAsync(docRef);
+            if (!snapshot.Exists)
+                return;
+
+            var data = snapshot.ToDictionary();
+            var used = Convert.ToSingle(data.GetValueOrDefault("used") ?? 0.0);
+            transaction.Update(docRef, "used", Math.Max(0f, used + delta));
+        });
+    }
+
+    public async Task GrantQuotaAsync(string quotaId, float amount)
+    {
+        var docRef = _db.Collection("quotas").Document(quotaId);
+
+        // A Firestore transaction re-runs on contention, so concurrent grants on the money-in path
+        // cannot lose updates when incrementing the limit.
+        await _db.RunTransactionAsync(async transaction =>
+        {
+            var snapshot = await transaction.GetSnapshotAsync(docRef);
+            if (!snapshot.Exists)
+                return;
+
+            var data = snapshot.ToDictionary();
+            var limit = Convert.ToSingle(data.GetValueOrDefault("limit") ?? 0.0);
+            transaction.Update(docRef, "limit", limit + amount);
+        });
+    }
+
     public async Task<bool> TryConsumeRateLimitAsync(string key, float rateLimitHz, float maxTokens, DateTime now)
     {
         var query = _db.Collection("requests")

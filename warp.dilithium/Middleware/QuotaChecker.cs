@@ -17,6 +17,18 @@ namespace Warp.Dilithium.Middleware
         public string? QuotaLimitHeader { get; set; }
         public string QuotaType { get; set; } = "prepaid";
         public string QuotaHeader { get; set; } = "X-Quota-Id";
+
+        /// <summary>
+        /// Amount of quota reserved up-front at admission time for a prepaid request (before dispatch).
+        /// A concurrent burst can no longer be served past the cap because each request atomically
+        /// reserves this amount before it is dispatched; when the reservation would exceed the limit the
+        /// request is rejected with 429. The actual (usually token-based) usage is only known after the
+        /// response, so <see cref="QuotaUpdater"/> reconciles the reservation against it afterwards.
+        /// </summary>
+        public float ReserveAmount { get; set; } = 1.0f;
+
+        /// <summary>Header used to hand the reserved amount to <see cref="QuotaUpdater"/> for reconciliation.</summary>
+        public string ReservedHeader { get; set; } = "X-Quota-Reserved";
     }
 
     public sealed class QuotaChecker : MiddlewareBase<QuotaCheckerOptions>
@@ -74,15 +86,31 @@ namespace Warp.Dilithium.Middleware
                 }
             }
 
-            // 4. Check quota based on type - prepaid blocks when exhausted, postpaid just passes through
+            // 4. Check quota based on type. Prepaid enforces admission control by atomically RESERVING
+            //    the per-request amount up-front (before dispatch): if the reservation would exceed the
+            //    limit the request is rejected with 429 and never dispatched, so a concurrent burst can
+            //    no longer be served past the cap. Postpaid has no cap, so it passes through and usage is
+            //    recorded post-response by QuotaUpdater.
             switch (quota.Type)
             {
                 case "prepaid":
-                    if (quota.Used >= quota.Limit)
+                    var reserved = Options.ReserveAmount;
+                    var reservation = await DataContext.TryConsumeQuotaAsync(quota.Id, reserved);
+                    switch (reservation)
                     {
-                        return Results
-                            .Problem(statusCode: 429, title: "Too Many Requests", detail: $"Quota exhausted for '{quotaName}'.")
-                            .Stop();
+                        case QuotaConsumeResult.Consumed:
+                            // Reservation succeeded atomically; hand the reserved amount to QuotaUpdater
+                            // so it reconciles against the actual usage instead of double-consuming.
+                            context.Request.Headers[Options.ReservedHeader] = reserved.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                            break;
+                        case QuotaConsumeResult.LimitExceeded:
+                            return Results
+                                .Problem(statusCode: 429, title: "Too Many Requests", detail: $"Quota exhausted for '{quotaName}'.")
+                                .Stop();
+                        case QuotaConsumeResult.NotFound:
+                            return Results
+                                .Problem(statusCode: 500, title: "Internal Server Error", detail: $"Quota '{quotaName}' could not be found for reservation.")
+                                .Stop();
                     }
                     break;
                 case "postpaid":

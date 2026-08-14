@@ -135,6 +135,37 @@ public class JsonDataContext : IDataContext
         }
     }
 
+    public Task SettleQuotaAsync(string quotaId, float delta)
+    {
+        lock (_syncRoot)
+        {
+            var quota = _store.Quotas.FirstOrDefault(q => q.Id == quotaId);
+            if (quota == null)
+                return Task.CompletedTask;
+
+            // The reservation was already admitted, so settle unconditionally; floor Used at 0 so an
+            // over-refund cannot drive the counter negative. The lock makes this atomic.
+            quota.Used = Math.Max(0f, quota.Used + delta);
+            SaveToFile();
+            return Task.CompletedTask;
+        }
+    }
+
+    public Task GrantQuotaAsync(string quotaId, float amount)
+    {
+        lock (_syncRoot)
+        {
+            var quota = _store.Quotas.FirstOrDefault(q => q.Id == quotaId);
+            if (quota == null)
+                return Task.CompletedTask;
+
+            // The lock serializes concurrent grants on the money-in path so no update is lost.
+            quota.Limit += amount;
+            SaveToFile();
+            return Task.CompletedTask;
+        }
+    }
+
     public Task<bool> TryConsumeRateLimitAsync(string key, float rateLimitHz, float maxTokens, DateTime now)
     {
         lock (_syncRoot)
