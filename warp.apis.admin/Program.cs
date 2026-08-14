@@ -8,6 +8,7 @@ using System.Diagnostics;
 using Microsoft.OpenApi.Models;
 
 using Warp.Core.Helper;
+using Warp.Apis.Admin;
 
 const int USERS_PAGESIZE = 25;
 
@@ -82,6 +83,9 @@ builder.Services.AddOpenTelemetry().WithTracing(tracer =>
 var activitySource = new ActivitySource(assemblyName);
 
 var app = builder.Build();
+
+// Enforce the Admin API authentication gate (ON by default, fails closed). See AdminApiKeyAuth.
+app.UseAdminApiKeyAuth();
 
 if (app.Environment.IsDevelopment())
 {

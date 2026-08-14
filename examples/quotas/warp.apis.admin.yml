@@ -2,6 +2,15 @@
 
 $include: "datacontext.yml" # Use an include to share configuration definitions between multiple files
 
+# Admin API authentication gate.
+# The Admin API exposes privileged user/permission/quota management endpoints. It has no auth of its own
+# beyond this gate, so it is ON by default and fails closed: every request (except /admin/health) must
+# present the shared secret in the configured header.
+AdminAuth:
+  Enabled: true                          # Set to false ONLY on a fully trusted, isolated network (logs a loud warning).
+  HeaderName: "X-Admin-Api-Key"          # Header callers must send the secret in.
+  ApiKey: "${ADMIN_API_KEY:}"            # Shared secret; inject via the ADMIN_API_KEY environment variable.
+
 Kestrel:
   Endpoints:
     Internal:

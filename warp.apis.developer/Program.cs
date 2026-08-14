@@ -4,6 +4,7 @@ using Microsoft.OpenApi.Models;
 
 using Warp.Core.Data;
 using Warp.Core.Helper;
+using Warp.Apis.Developer;
 
 var builder = WebApplication.CreateBuilder(args);
 var assemblyName = Assembly.GetExecutingAssembly().GetName().Name ?? "warp.apis.developer";
@@ -58,6 +59,9 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 var app = builder.Build();
+
+// Only honor X-JWT-Email / X-Permissions from a trusted upstream (the gateway). See GatewayHeaderTrust.
+app.UseGatewayHeaderTrust();
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())

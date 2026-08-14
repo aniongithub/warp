@@ -43,6 +43,23 @@ This architecture allows us to put Warp together in a variety of ways with pure 
 - **[Async-ification of synchronous APIs](examples/async/README.md)** - Transform synchronous APIs to asynchronous job processing with real-time notifications and end-to-end OpenTelemetry tracking
 - **[Monetization with Stripe](examples/monetization/README.md)** - Monetize API usage with Stripe: one-time credit purchases (prepaid quota) and recurring subscriptions (postpaid plan quota), reconciled via auto-registered webhooks
 
+## Security & Trust Boundary
+
+Warp's control plane assumes the gateway is the single authenticated front door and that the internal APIs sit behind it. The following gates harden that boundary and are **on by default (fail closed)**. Each has a documented escape hatch for trusted-network deployments that logs a loud warning when used.
+
+| Area | Default behavior | Config knob (section) | Env var |
+| --- | --- | --- | --- |
+| **Gateway JWT** (`warp.dilithium` `JwtValidator`) | Signature validation is **required**; tokens are rejected unless they verify against JWKS or a symmetric secret. JWKS keys are cached in-process and refreshed on an interval instead of fetched per request. | `ValidateSigningKey` (true), `JwksCacheLifetimeSeconds` (3600), `AllowUnsignedTokensInsecure` (false, dev-only) under each `JwtValidator` `Options` | — |
+| **Admin API** (`warp.apis.admin`) | Every request except `/admin/health` must present a shared secret; missing/invalid → 401, gate enabled but no key configured → 503. | `AdminAuth:` (`Enabled`, `HeaderName` = `X-Admin-Api-Key`, `ApiKey`) | `ADMIN_API_KEY` |
+| **Developer API** (`warp.apis.developer`) | `X-JWT-Email` / `X-Permissions` (and other identity headers) are **stripped** from any request that is not from a trusted upstream — loopback, or one carrying the gateway marker header. Defeats header spoofing when the API is reachable directly. | `GatewayTrust:` (`Enabled`, `HeaderName` = `X-Gateway-Auth`, `SharedSecret`) | `GATEWAY_SHARED_SECRET` |
+| **Stripe webhooks** (`warp.latinum`) | Inbound webhooks are verified against the `Stripe-Signature` header and signing secret; failures → 400, missing secret → 500. | Stripe controller `Options` (`VerifySignature`, `WebhookSecret`, `PaymentWebhookSecret`, `SubscriptionWebhookSecret`, `SignatureToleranceSeconds`, `AllowUnverifiedWebhooksInsecure`) | `STRIPE_WEBHOOK_SECRET`, `STRIPE_PAYMENT_WEBHOOK_SECRET`, `STRIPE_SUBSCRIPTION_WEBHOOK_SECRET` |
+
+**Deployment notes:**
+
+- **Admin API:** set `ADMIN_API_KEY` and have callers send it in `X-Admin-Api-Key`. For a genuinely isolated network you may set `AdminAuth:Enabled: false` (logs a warning).
+- **Developer API:** the guard trusts loopback automatically. For cross-host deployments, configure `GATEWAY_SHARED_SECRET` here **and** have the gateway inject the same value in `X-Gateway-Auth` (e.g. via a YARP request transform on the developer route). Without a secret, only loopback callers may supply identity headers. This gateway-injection step is an operator responsibility (documented assumption); everything else is enforced in code.
+- **Stripe webhooks:** set `STRIPE_WEBHOOK_SECRET` (and the per-endpoint secrets if the payment and subscription webhooks differ). `AllowUnverifiedWebhooksInsecure` is dev/test only.
+
 ## Persistence and Data Storage
 
 - **Pluggable data context**: Use SQLite, Postgres, Firebase or a simple JSON file for persistence (see `warp.core/Data/Contexts/`). You can also add new storage backends by implementing the `IDataContext` interface.

@@ -32,4 +32,19 @@ Controllers:
       # Subscription webhook configuration (for controller attribute)
       WebhookUrl: "${STRIPE_SUBSCRIPTION_WEBHOOK_URL:}"
       StripePublishableKey: "${STRIPE_PUBLISHABLE_KEY:}"
+
+      # --- Webhook signature verification ---
+      # Inbound Stripe webhooks are verified against the signing secret using the Stripe-Signature
+      # header. Verification is REQUIRED by default; requests that fail (or a missing secret) are
+      # rejected with 400/500 (fail closed).
+      VerifySignature: true
+      # Shared/default signing secret; used for both endpoints unless a per-endpoint secret is set.
       WebhookSecret: "${STRIPE_WEBHOOK_SECRET:}"
+      # Optional per-endpoint secrets when the payment and subscription webhooks use different secrets.
+      PaymentWebhookSecret: "${STRIPE_PAYMENT_WEBHOOK_SECRET:}"
+      SubscriptionWebhookSecret: "${STRIPE_SUBSCRIPTION_WEBHOOK_SECRET:}"
+      # Allowed timestamp tolerance (seconds) for the signature. Default: 300.
+      SignatureToleranceSeconds: 300
+      # DANGER / dev-only escape hatch: when true, webhooks are processed WITHOUT signature
+      # verification. Off by default and must never be enabled in production.
+      AllowUnverifiedWebhooksInsecure: false
