@@ -25,6 +25,11 @@ Controllers:
       # Payment webhook configuration
       NgrokAuthToken: "${NGROK_AUTH_TOKEN:}"
       StripeSecretKey: "${STRIPE_SECRET_KEY:}"
+      # Base URL for the Stripe API. Honored by both the middleware and the startup
+      # provisioning/webhook-registration attribute layer. Override to point at LocalStripe.
+      StripeApiBase: "${STRIPE_API_BASE:https://api.stripe.com}"
+      # Public base URL used to register the payment webhook endpoint in RELEASE builds.
+      CallbackUrl: "${STRIPE_PAYMENT_CALLBACK_URL:http://warp:5004}"
       KeyHeaders: 
         - "X-JWT-Email"
         - "X-Api-Key"      
