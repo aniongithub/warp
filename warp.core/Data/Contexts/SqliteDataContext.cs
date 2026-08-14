@@ -184,6 +184,119 @@ public class SqliteDataContext : IDataContext
         return SaveAsync(entity);
     }
 
+    public Task<QuotaConsumeResult> TryConsumeQuotaAsync(string quotaId, float amount)
+    {
+        using var conn = new SqliteConnection(_connectionString);
+        conn.Open();
+        SetBusyTimeout(conn);
+
+        // A single UPDATE is atomic in SQLite. The WHERE clause enforces the prepaid limit so the
+        // check-and-increment happens as one indivisible operation (no lost updates / overrun).
+        using var tx = conn.BeginTransaction();
+        var update = conn.CreateCommand();
+        update.Transaction = tx;
+        update.CommandText = @"
+        UPDATE Quotas SET Used = Used + $amount
+        WHERE Id = $id AND (Type <> 'prepaid' OR Used + $amount <= QuotaLimit);";
+        update.Parameters.AddWithValue("$amount", amount);
+        update.Parameters.AddWithValue("$id", quotaId);
+        var rows = update.ExecuteNonQuery();
+
+        QuotaConsumeResult result;
+        if (rows > 0)
+        {
+            result = QuotaConsumeResult.Consumed;
+        }
+        else
+        {
+            // No row updated: either the quota does not exist or the prepaid limit was reached.
+            var check = conn.CreateCommand();
+            check.Transaction = tx;
+            check.CommandText = "SELECT COUNT(*) FROM Quotas WHERE Id = $id;";
+            check.Parameters.AddWithValue("$id", quotaId);
+            var count = Convert.ToInt64(check.ExecuteScalar());
+            result = count > 0 ? QuotaConsumeResult.LimitExceeded : QuotaConsumeResult.NotFound;
+        }
+
+        tx.Commit();
+        return Task.FromResult(result);
+    }
+
+    public Task<bool> TryConsumeRateLimitAsync(string key, float rateLimitHz, float maxTokens, DateTime now)
+    {
+        using var conn = new SqliteConnection(_connectionString);
+        conn.Open();
+        SetBusyTimeout(conn);
+
+        // BEGIN IMMEDIATE takes a write lock up front so the read-compute-write cycle is serialized
+        // against other writers, preventing lost token decrements.
+        Execute(conn, "BEGIN IMMEDIATE;");
+        try
+        {
+            string? id = null;
+            DateTime lastUsed = now;
+            float lastRate = 0f;
+            var exists = false;
+
+            var select = conn.CreateCommand();
+            select.CommandText = "SELECT Id, LastUsed, LastRate FROM Requests WHERE Key = $key ORDER BY LastUsed DESC LIMIT 1;";
+            select.Parameters.AddWithValue("$key", key);
+            using (var reader = select.ExecuteReader())
+            {
+                if (reader.Read())
+                {
+                    exists = true;
+                    id = reader.GetString(0);
+                    lastUsed = DateTime.Parse(reader.GetString(1));
+                    lastRate = (float)reader.GetDouble(2);
+                }
+            }
+
+            if (!RateLimitTokenBucket.TryConsume(exists, lastUsed, lastRate, now, rateLimitHz, maxTokens, out var remaining))
+            {
+                Execute(conn, "COMMIT;"); // nothing changed
+                return Task.FromResult(false);
+            }
+
+            if (exists)
+            {
+                var update = conn.CreateCommand();
+                update.CommandText = "UPDATE Requests SET LastUsed = $lastUsed, LastRate = $lastRate WHERE Id = $id;";
+                update.Parameters.AddWithValue("$lastUsed", now.ToString("o"));
+                update.Parameters.AddWithValue("$lastRate", remaining);
+                update.Parameters.AddWithValue("$id", id!);
+                update.ExecuteNonQuery();
+            }
+            else
+            {
+                var insert = conn.CreateCommand();
+                insert.CommandText = "INSERT INTO Requests (Id, Key, LastUsed, LastRate) VALUES ($id, $key, $lastUsed, $lastRate);";
+                insert.Parameters.AddWithValue("$id", Guid.NewGuid().ToString());
+                insert.Parameters.AddWithValue("$key", key);
+                insert.Parameters.AddWithValue("$lastUsed", now.ToString("o"));
+                insert.Parameters.AddWithValue("$lastRate", remaining);
+                insert.ExecuteNonQuery();
+            }
+
+            Execute(conn, "COMMIT;");
+            return Task.FromResult(true);
+        }
+        catch
+        {
+            Execute(conn, "ROLLBACK;");
+            throw;
+        }
+    }
+
+    private static void SetBusyTimeout(SqliteConnection conn) => Execute(conn, "PRAGMA busy_timeout=5000;");
+
+    private static void Execute(SqliteConnection conn, string sql)
+    {
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.ExecuteNonQuery();
+    }
+
     private void UpsertUser(IUser user)
     {
         using var conn = new SqliteConnection(_connectionString);

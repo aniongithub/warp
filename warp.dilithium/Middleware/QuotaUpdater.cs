@@ -60,19 +60,23 @@ namespace Warp.Dilithium.Middleware
                 return Results.Ok().Continue();
             }
 
-            // Find and update the quota
-            var quota = DataContext.Quotas.FirstOrDefault(q => q.Id == quotaId);
-            if (quota != null)
+            // Atomically consume the quota. This closes the read-modify-write race in the previous
+            // implementation (concurrent `quota.Used += usage; SaveAsync(quota)` could lose updates
+            // and overrun the limit). Enforcement of the prepaid limit happens inside the store.
+            var result = await DataContext.TryConsumeQuotaAsync(quotaId, usage);
+            switch (result)
             {
-                quota.Used += usage;
-                await DataContext.SaveAsync(quota);
-                
-                Logger.LogDebug("QuotaUpdater: Updated quota '{QuotaName}' (ID: {QuotaId}) by {Usage} units", 
-                    quota.QuotaName, quotaId, usage);
-            }
-            else
-            {
-                Logger.LogWarning("QuotaUpdater: Could not find quota with ID '{QuotaId}' for update", quotaId);
+                case QuotaConsumeResult.Consumed:
+                    Logger.LogDebug("QuotaUpdater: Consumed {Usage} units from quota (ID: {QuotaId})",
+                        usage, quotaId);
+                    break;
+                case QuotaConsumeResult.LimitExceeded:
+                    Logger.LogWarning("QuotaUpdater: Quota (ID: {QuotaId}) is exhausted; {Usage} units not recorded",
+                        quotaId, usage);
+                    break;
+                case QuotaConsumeResult.NotFound:
+                    Logger.LogWarning("QuotaUpdater: Could not find quota with ID '{QuotaId}' for update", quotaId);
+                    break;
             }
 
             return Results.Ok().Continue();

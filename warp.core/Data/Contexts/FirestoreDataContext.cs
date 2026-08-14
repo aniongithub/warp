@@ -271,6 +271,80 @@ public class FirestoreDataContext : IDataContext
         return SaveAsync(entity);
     }
 
+    public async Task<QuotaConsumeResult> TryConsumeQuotaAsync(string quotaId, float amount)
+    {
+        var docRef = _db.Collection("quotas").Document(quotaId);
+
+        // A Firestore transaction re-runs on contention, guaranteeing the read-check-write is atomic.
+        return await _db.RunTransactionAsync(async transaction =>
+        {
+            var snapshot = await transaction.GetSnapshotAsync(docRef);
+            if (!snapshot.Exists)
+                return QuotaConsumeResult.NotFound;
+
+            var data = snapshot.ToDictionary();
+            var used = Convert.ToSingle(data.GetValueOrDefault("used") ?? 0.0);
+            var limit = Convert.ToSingle(data.GetValueOrDefault("limit") ?? 0.0);
+            var type = data.GetValueOrDefault("type")?.ToString() ?? "prepaid";
+
+            if (type == "prepaid" && used + amount > limit)
+                return QuotaConsumeResult.LimitExceeded;
+
+            transaction.Update(docRef, "used", used + amount);
+            return QuotaConsumeResult.Consumed;
+        });
+    }
+
+    public async Task<bool> TryConsumeRateLimitAsync(string key, float rateLimitHz, float maxTokens, DateTime now)
+    {
+        var query = _db.Collection("requests")
+            .WhereEqualTo("key", key)
+            .OrderByDescending("lastUsed")
+            .Limit(1);
+
+        return await _db.RunTransactionAsync(async transaction =>
+        {
+            var snapshot = await transaction.GetSnapshotAsync(query);
+
+            DocumentReference? docRef = null;
+            DateTime lastUsed = now;
+            float lastRate = 0f;
+            var exists = false;
+
+            if (snapshot.Count > 0)
+            {
+                var document = snapshot.Documents[0];
+                exists = true;
+                docRef = document.Reference;
+                var data = document.ToDictionary();
+                if (data.GetValueOrDefault("lastUsed") is Timestamp ts)
+                    lastUsed = ts.ToDateTime();
+                lastRate = Convert.ToSingle(data.GetValueOrDefault("lastRate") ?? 0.0);
+            }
+
+            if (!RateLimitTokenBucket.TryConsume(exists, lastUsed, lastRate, now, rateLimitHz, maxTokens, out var remaining))
+                return false;
+
+            var payload = new Dictionary<string, object>
+            {
+                { "key", key },
+                { "lastUsed", Timestamp.FromDateTime(now.ToUniversalTime()) },
+                { "lastRate", remaining }
+            };
+
+            if (exists && docRef != null)
+                transaction.Update(docRef, new Dictionary<string, object>
+                {
+                    { "lastUsed", payload["lastUsed"] },
+                    { "lastRate", payload["lastRate"] }
+                });
+            else
+                transaction.Set(_db.Collection("requests").Document(), payload);
+
+            return true;
+        });
+    }
+
     private async Task UpsertUserAsync(IUser user)
     {
         try

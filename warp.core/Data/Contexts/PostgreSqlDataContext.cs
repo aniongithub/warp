@@ -239,6 +239,102 @@ public class PostgreSqlDataContext : IDataContext
         return SaveAsync(entity);
     }
 
+    public async Task<QuotaConsumeResult> TryConsumeQuotaAsync(string quotaId, float amount)
+    {
+        using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync();
+        using var tx = await conn.BeginTransactionAsync();
+
+        // A single conditional UPDATE performs the check-and-increment atomically. For prepaid
+        // quotas the increment is applied only while it keeps Used within QuotaLimit.
+        var update = conn.CreateCommand();
+        update.Transaction = tx;
+        update.CommandText = @"
+        UPDATE Quotas SET Used = Used + $1
+        WHERE Id = $2 AND (Type <> 'prepaid' OR Used + $1 <= QuotaLimit);";
+        update.Parameters.AddWithValue(amount);
+        update.Parameters.AddWithValue(quotaId);
+        var rows = await update.ExecuteNonQueryAsync();
+
+        QuotaConsumeResult result;
+        if (rows > 0)
+        {
+            result = QuotaConsumeResult.Consumed;
+        }
+        else
+        {
+            var check = conn.CreateCommand();
+            check.Transaction = tx;
+            check.CommandText = "SELECT COUNT(*) FROM Quotas WHERE Id = $1;";
+            check.Parameters.AddWithValue(quotaId);
+            var count = Convert.ToInt64(await check.ExecuteScalarAsync());
+            result = count > 0 ? QuotaConsumeResult.LimitExceeded : QuotaConsumeResult.NotFound;
+        }
+
+        await tx.CommitAsync();
+        return result;
+    }
+
+    public async Task<bool> TryConsumeRateLimitAsync(string key, float rateLimitHz, float maxTokens, DateTime now)
+    {
+        using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync();
+        using var tx = await conn.BeginTransactionAsync();
+
+        string? id = null;
+        DateTime lastUsed = now;
+        float lastRate = 0f;
+        var exists = false;
+
+        // SELECT ... FOR UPDATE locks the current bucket row for the duration of the transaction,
+        // serializing concurrent consumers for the same key so token decrements cannot be lost.
+        var select = conn.CreateCommand();
+        select.Transaction = tx;
+        select.CommandText = "SELECT Id, LastUsed, LastRate FROM Requests WHERE Key = $1 ORDER BY LastUsed DESC LIMIT 1 FOR UPDATE;";
+        select.Parameters.AddWithValue(key);
+        using (var reader = await select.ExecuteReaderAsync())
+        {
+            if (await reader.ReadAsync())
+            {
+                exists = true;
+                id = reader.GetString(0);
+                lastUsed = reader.GetDateTime(1);
+                lastRate = reader.GetFloat(2);
+            }
+        }
+
+        if (!RateLimitTokenBucket.TryConsume(exists, lastUsed, lastRate, now, rateLimitHz, maxTokens, out var remaining))
+        {
+            await tx.CommitAsync();
+            return false;
+        }
+
+        if (exists)
+        {
+            var update = conn.CreateCommand();
+            update.Transaction = tx;
+            update.CommandText = "UPDATE Requests SET LastUsed = $1, LastRate = $2 WHERE Id = $3;";
+            update.Parameters.AddWithValue(now);
+            update.Parameters.AddWithValue(remaining);
+            update.Parameters.AddWithValue(id!);
+            await update.ExecuteNonQueryAsync();
+        }
+        else
+        {
+            var insert = conn.CreateCommand();
+            insert.Transaction = tx;
+            insert.CommandText = "INSERT INTO Requests (Id, Key, LastUsed, LastRate) VALUES ($1, $2, $3, $4);";
+            insert.Parameters.AddWithValue(Guid.NewGuid().ToString());
+            insert.Parameters.AddWithValue(key);
+            insert.Parameters.AddWithValue(now);
+            insert.Parameters.AddWithValue(remaining);
+            await insert.ExecuteNonQueryAsync();
+        }
+
+        await tx.CommitAsync();
+        return true;
+    }
+
     private async Task UpsertUserAsync(IUser user)
     {
         using var conn = new NpgsqlConnection(_connectionString);
