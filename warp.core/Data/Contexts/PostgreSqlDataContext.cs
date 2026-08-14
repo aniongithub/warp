@@ -326,8 +326,21 @@ public class PostgreSqlDataContext : IDataContext
         float lastRate = 0f;
         var exists = false;
 
-        // SELECT ... FOR UPDATE locks the current bucket row for the duration of the transaction,
-        // serializing concurrent consumers for the same key so token decrements cannot be lost.
+        // SELECT ... FOR UPDATE cannot lock a row that does not exist yet, so concurrent first-hits
+        // on a cold (never-seen) key would each observe an empty bucket, each compute a full token
+        // allowance and all be admitted — overrunning the configured capacity. A transaction-scoped
+        // advisory lock keyed on the bucket serializes those cold-start callers as well; it is
+        // released automatically when the transaction commits/rolls back. A hash collision only
+        // serializes two unrelated keys (a minor, safe concurrency reduction) and never affects
+        // correctness.
+        var advisoryLock = conn.CreateCommand();
+        advisoryLock.Transaction = tx;
+        advisoryLock.CommandText = "SELECT pg_advisory_xact_lock(hashtext($1)::bigint);";
+        advisoryLock.Parameters.AddWithValue(key);
+        await advisoryLock.ExecuteNonQueryAsync();
+
+        // With the per-key advisory lock held, the existing bucket row (if any) is read under the
+        // same serialized section so token decrements cannot be lost.
         var select = conn.CreateCommand();
         select.Transaction = tx;
         select.CommandText = "SELECT Id, LastUsed, LastRate FROM Requests WHERE Key = $1 ORDER BY LastUsed DESC LIMIT 1 FOR UPDATE;";

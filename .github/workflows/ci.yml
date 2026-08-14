@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref to save runner minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: build & test
+    runs-on: ubuntu-latest
+    env:
+      DOTNET_NOLOGO: "true"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+      # Ryuk (the Testcontainers reaper) is unnecessary on ephemeral CI runners and can be flaky
+      # in nested-Docker environments; the runner is torn down after the job regardless.
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      # NOTE: the devcontainer-only rule for builds is a LOCAL host-protection guard. CI runners are
+      # ephemeral Linux VMs with a Docker daemon, so it is correct to run dotnet / Testcontainers
+      # directly here. Testcontainers starts Postgres, Redis and the Firestore emulator on demand.
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'tests/Directory.Build.props', 'dotnet-tools.json') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      # The API projects generate their swagger docs during build via a local dotnet tool.
+      - name: Restore .NET tools
+        run: dotnet tool restore
+
+      - name: Restore
+        run: dotnet restore warp.sln
+
+      - name: Build
+        run: dotnet build warp.sln -c Debug --no-restore
+
+      - name: Test (unit + integration)
+        run: >-
+          dotnet test warp.sln -c Debug --no-build
+          --logger "trx"
+          --results-directory ${{ github.workspace }}/test-results
+
+      - name: Upload test results (trx)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: ${{ github.workspace }}/test-results/**/*.trx
+          if-no-files-found: error

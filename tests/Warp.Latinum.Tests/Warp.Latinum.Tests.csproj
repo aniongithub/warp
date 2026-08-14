@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Warp.Latinum.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    Unit coverage for the post-#29 Stripe webhook signature-verification decision.
+    This is pure Stripe.net crypto (no network, no project reference needed), so we
+    reference the same Stripe.net version warp.latinum ships. Future full-stack Stripe
+    e2e tests (localstripe) slot in alongside these under the same project.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Stripe.net" Version="47.0.0" />
+  </ItemGroup>
+
+</Project>

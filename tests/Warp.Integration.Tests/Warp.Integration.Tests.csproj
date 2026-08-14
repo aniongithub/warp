@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Warp.Integration.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\warp.core\warp.core.csproj" />
+  </ItemGroup>
+
+  <!--
+    Testcontainers spins real Postgres / Redis and the Firestore emulator so the atomicity
+    suite exercises the actual backend transaction code paths under real parallelism.
+    Json + Sqlite backends use temp files and need no container.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Testcontainers" Version="4.0.0" />
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.0.0" />
+    <PackageReference Include="Testcontainers.Redis" Version="4.0.0" />
+  </ItemGroup>
+
+</Project>
