@@ -51,12 +51,14 @@ public class StripeSubscriptionOptions : AsyncApiHandlerOptions
     // ConnectionString and Channel are inherited from AsyncApiHandlerOptions
     
     // Webhook display name for Stripe dashboard
-    public string WebhookName { get; set; } = "Warp Monetization Webhook";
+    public string WebhookName { get; set; } = "Warp Subscription Webhook";
 }
 
 public class StripeSubscriptionMiddleware : AsyncApiHandler<StripeSubscriptionOptions, RedisJobContext>
 {
     private readonly SessionService _sessionService;
+    private readonly ProductService _productService;
+    private readonly PriceService _priceService;
 
     public StripeSubscriptionMiddleware(
         string name,
@@ -84,6 +86,82 @@ public class StripeSubscriptionMiddleware : AsyncApiHandler<StripeSubscriptionOp
         );
         
         _sessionService = new SessionService(stripeClient);
+        _productService = new ProductService(stripeClient);
+        _priceService = new PriceService(stripeClient);
+    }
+
+    /// <summary>
+    /// Ensures a plan has its Stripe Product/Price IDs populated. The gateway middleware
+    /// loads plans from config but (unlike the latinum controller attribute) does not run
+    /// Stripe product/price provisioning at startup, so a freshly loaded plan has empty
+    /// StripeProductId/StripePriceId. This resolves them lazily and idempotently by looking
+    /// up the Product via its plan_id metadata (creating it if missing) and the matching
+    /// active recurring Price (creating it if missing), mirroring the controller attribute.
+    /// </summary>
+    private async Task EnsurePlanPricingAsync(StripeSubscriptionPlan plan)
+    {
+        if (!string.IsNullOrEmpty(plan.StripePriceId))
+            return;
+
+        // Resolve the Stripe Product for this plan (by plan_id metadata), creating if absent.
+        var products = await _productService.ListAsync(new ProductListOptions { Limit = 100, Active = true });
+        var product = products.Data.FirstOrDefault(p =>
+            p.Metadata != null &&
+            p.Metadata.TryGetValue("plan_id", out var pid) && pid == plan.PlanId);
+
+        if (product == null)
+        {
+            product = await _productService.CreateAsync(new ProductCreateOptions
+            {
+                Name = plan.ProductName,
+                Description = plan.ProductDescription,
+                Type = "service",
+                Metadata = new Dictionary<string, string>
+                {
+                    ["plan_id"] = plan.PlanId,
+                    ["quota_name"] = plan.QuotaName ?? "",
+                    ["quota_type"] = plan.QuotaType ?? "postpaid"
+                }
+            });
+        }
+        plan.StripeProductId = product.Id;
+
+        // Resolve the matching active recurring Price, creating if absent.
+        var prices = await _priceService.ListAsync(new PriceListOptions
+        {
+            Product = product.Id,
+            Active = true,
+            Limit = 100
+        });
+        var price = prices.Data.FirstOrDefault(p =>
+            p.UnitAmount == (long)(plan.Amount * 100) &&
+            p.Recurring?.Interval == plan.Interval &&
+            p.Recurring?.IntervalCount == plan.IntervalCount);
+
+        if (price == null)
+        {
+            price = await _priceService.CreateAsync(new PriceCreateOptions
+            {
+                Product = product.Id,
+                UnitAmount = (long)(plan.Amount * 100),
+                Currency = plan.Currency,
+                Recurring = new PriceRecurringOptions
+                {
+                    Interval = plan.Interval,
+                    IntervalCount = plan.IntervalCount
+                },
+                Metadata = new Dictionary<string, string>
+                {
+                    ["plan_id"] = plan.PlanId,
+                    ["quota_name"] = plan.QuotaName ?? "",
+                    ["quota_type"] = plan.QuotaType ?? "postpaid"
+                }
+            });
+        }
+        plan.StripePriceId = price.Id;
+
+        Logger.LogInformation("Resolved Stripe pricing for plan '{PlanId}': Product {ProductId}, Price {PriceId}",
+            plan.PlanId, plan.StripeProductId, plan.StripePriceId);
     }
 
     protected override async Task<Job> CreateJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo, TracingContext tracingContext)
@@ -151,6 +229,8 @@ public class StripeSubscriptionMiddleware : AsyncApiHandler<StripeSubscriptionOp
     {
         try
         {
+            await EnsurePlanPricingAsync(plan);
+
             Logger.LogInformation("Creating Stripe subscription session for user {UserId} with plan {PlanId} (price {PriceId})", 
                 userId, plan.PlanId, plan.StripePriceId);
 

@@ -27,33 +27,74 @@ public class StripeWebhookController : ControllerBase
         _logger = logger;
         _options = options.Value;
         
-        // Initialize JobContext once in constructor
+        // Initialize JobContext once in constructor.
+        // Payment jobs always live in the stripe_payment_async channel (the channel is part
+        // of the Redis key), so use it explicitly rather than the unset StripePaymentOptions
+        // default. Subscription jobs use their own context (see CreateSubscriptionJobContext).
         var jobContext = new RedisJobContext();
-        jobContext.Initialize(_options.ConnectionString, _options.Channel);
+        jobContext.Initialize(_options.ConnectionString, "stripe_payment_async");
         _jobContext = jobContext;
     }
 
-    [HttpPost("subscription/{jobId}")]
-    public async Task<IActionResult> HandleSubscriptionWebhook(string jobId, [FromBody] object webhookData)
+    [HttpPost("subscription")]
+    public async Task<IActionResult> HandleSubscriptionWebhook([FromBody] JsonElement webhookData)
     {
         try
         {
-            _logger.LogInformation("Received subscription webhook for job {JobId}", jobId);
+            // Extract event type to filter relevant events
+            if (!webhookData.TryGetProperty("type", out var eventTypeElement))
+            {
+                _logger.LogWarning("Received subscription webhook without event type");
+                return BadRequest("Missing event type");
+            }
+
+            var eventType = eventTypeElement.GetString();
+
+            _logger.LogInformation("Received Stripe subscription webhook: {WebhookType}", eventType);
+
+            // Subscriptions are activated when the Checkout Session completes. Stripe also
+            // delivers customer.subscription.* and invoice.* events to this endpoint, but
+            // those carry subscription/invoice IDs rather than the checkout session ID we
+            // use as the job ID, so we acknowledge and ignore them here.
+            if (eventType != "checkout.session.completed")
+            {
+                _logger.LogInformation("Ignoring subscription webhook event type: {EventType}", eventType);
+                return Ok(new { status = "ignored", event_type = eventType });
+            }
+
+            // For checkout.session.completed, data.object.id is the Checkout Session ID,
+            // which was used as the job ID when the subscription checkout was created.
+            string? sessionId = null;
+            if (webhookData.TryGetProperty("data", out var dataElement) &&
+                dataElement.TryGetProperty("object", out var objectElement) &&
+                objectElement.TryGetProperty("id", out var idElement))
+            {
+                sessionId = idElement.GetString();
+            }
+
+            if (string.IsNullOrEmpty(sessionId))
+            {
+                _logger.LogWarning("Received subscription webhook without checkout session ID");
+                return BadRequest("Missing checkout session ID");
+            }
+
+            _logger.LogInformation("Received subscription webhook for checkout session {SessionId}", sessionId);
 
             // Find the subscription job in the subscription channel
-            Job? job = await FindSubscriptionJob(jobId);
+            var subscriptionJobContext = CreateSubscriptionJobContext();
+            Job? job = await FindSubscriptionJob(sessionId, subscriptionJobContext);
             
             if (job == null)
             {
-                _logger.LogWarning("Job {JobId} not found", jobId);
-                return NotFound($"Job {jobId} not found");
+                _logger.LogWarning("Subscription job {SessionId} not found", sessionId);
+                return NotFound($"Job {sessionId} not found");
             }
 
             // If job is already completed, skip processing (idempotency)
             if (job.Status == JobStatus.Completed)
             {
-                _logger.LogInformation("Subscription webhook for {JobId} already processed, skipping", jobId);
-                return Ok(new { status = "already_processed", job_id = jobId, message = "Webhook already processed" });
+                _logger.LogInformation("Subscription webhook for {SessionId} already processed, skipping", sessionId);
+                return Ok(new { status = "already_processed", job_id = sessionId, message = "Webhook already processed" });
             }
 
             var subscriptionPlan = job.Parameters.TryGetValue("subscription_plan", out var planObj)
@@ -64,16 +105,18 @@ public class StripeWebhookController : ControllerBase
             var key = ResolveKeyFromJob(job);
             await UpdateUserQuotaForSubscription(key, subscriptionPlan);
 
-            await _jobContext.UpdateJobAsync(job, JobStatus.Completed, 
+            // Update the job in the subscription channel it actually lives in (the channel is
+            // part of the Redis key, so the default payment-channel context would not find it).
+            await subscriptionJobContext.UpdateJobAsync(job, JobStatus.Completed, 
                 output: JsonSerializer.Serialize(new { status = "subscription_activated", plan = subscriptionPlan }));
 
-            _logger.LogInformation("Successfully processed subscription webhook for job {JobId}", jobId);
+            _logger.LogInformation("Successfully processed subscription webhook for job {SessionId}", sessionId);
 
-            return Ok(new { status = "completed", job_id = jobId, subscription_plan = subscriptionPlan });
+            return Ok(new { status = "completed", job_id = sessionId, subscription_plan = subscriptionPlan });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing subscription webhook for job {JobId}", jobId);
+            _logger.LogError(ex, "Error processing subscription webhook");
             return StatusCode(500, "Internal server error");
         }
     }
@@ -228,15 +271,23 @@ public class StripeWebhookController : ControllerBase
     }
 
     /// <summary>
+    /// Creates a job context bound to the subscription channel. Subscription jobs are always
+    /// stored in the stripe_subscription_async channel, which is distinct from the controller's
+    /// default (payment) channel and is encoded into the Redis keys.
+    /// </summary>
+    private RedisJobContext CreateSubscriptionJobContext()
+    {
+        var subscriptionJobContext = new RedisJobContext();
+        subscriptionJobContext.Initialize(_options.ConnectionString, "stripe_subscription_async");
+        return subscriptionJobContext;
+    }
+
+    /// <summary>
     /// Finds a subscription job in the subscription channel.
     /// Subscription jobs are always in the stripe_subscription_async channel.
     /// </summary>
-    private async Task<Job?> FindSubscriptionJob(string sessionId)
+    private async Task<Job?> FindSubscriptionJob(string sessionId, RedisJobContext subscriptionJobContext)
     {
-        // Subscription jobs are always in the subscription channel
-        var subscriptionJobContext = new RedisJobContext();
-        subscriptionJobContext.Initialize(_options.ConnectionString, "stripe_subscription_async");
-
         try
         {
             return await subscriptionJobContext.LookupJobAsync<Job>(sessionId, JobStatus.Queued, "*");
@@ -260,7 +311,7 @@ public class StripeWebhookController : ControllerBase
             _logger.LogInformation("User reached success page for session {SessionId}", session_id);
 
             // Look up the subscription job (session_id is the job ID for subscriptions)
-            Job? job = await FindSubscriptionJob(session_id);
+            Job? job = await FindSubscriptionJob(session_id, CreateSubscriptionJobContext());
             
             if (job != null)
             {

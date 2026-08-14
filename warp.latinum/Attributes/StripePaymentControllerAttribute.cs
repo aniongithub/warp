@@ -61,6 +61,17 @@ public class StripePaymentControllerAttribute : PaymentControllerAttribute
 
     private async Task<string> StartNgrokAsync(HttpClient httpClient, ILogger logger, StripePaymentOptions options)
     {
+        // Reuse an existing ngrok tunnel if one is already running. Free ngrok
+        // accounts allow only one simultaneous agent session, and the payment and
+        // subscription webhooks share a single tunnel (same base URL, different
+        // paths), so starting a second ngrok agent would fail.
+        var existingTunnel = await TryGetNgrokTunnelUrlAsync(httpClient);
+        if (!string.IsNullOrEmpty(existingTunnel))
+        {
+            logger.LogInformation("Reusing existing ngrok tunnel: {NgrokUrl}", existingTunnel);
+            return existingTunnel;
+        }
+
         logger.LogInformation("Starting ngrok tunnel for port 5004...");
 
         // Start ngrok process
@@ -119,6 +130,40 @@ public class StripePaymentControllerAttribute : PaymentControllerAttribute
         {
             logger.LogError(ex, "Failed to get ngrok tunnel URL from API");
             throw;
+        }
+    }
+
+    private async Task<string?> TryGetNgrokTunnelUrlAsync(HttpClient httpClient)
+    {
+        try
+        {
+            var response = await httpClient.GetAsync("http://127.0.0.1:4040/api/tunnels");
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var jsonResponse = await response.Content.ReadAsStringAsync();
+            var tunnelsData = JsonSerializer.Deserialize<JsonElement>(jsonResponse);
+
+            if (!tunnelsData.TryGetProperty("tunnels", out var tunnels))
+            {
+                return null;
+            }
+
+            foreach (var tunnel in tunnels.EnumerateArray())
+            {
+                if (tunnel.GetProperty("proto").GetString() == "https")
+                {
+                    return tunnel.GetProperty("public_url").GetString();
+                }
+            }
+
+            return null;
+        }
+        catch
+        {
+            return null;
         }
     }
 
