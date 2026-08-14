@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -7,9 +8,9 @@ using OpenTelemetry.Trace;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using Warp.Core.Data;
 using Warp.Core.Helper;
 using Warp.Core.Job;
-using Warp.Core.Job.Delivery;
 using Warp.Dilithium.Transforms;
 
 namespace Warp.Plasma;
@@ -33,8 +34,12 @@ class Program
                 {
                     services.AddHttpClient();
                     
-                    // Configure OpenTelemetry for distributed tracing
+                    // Create and register DataContext from configuration (needed by middleware)
                     var config = context.Configuration;
+                    var dataContext = config.GetSection("DataContext").CreateFromConfiguration();
+                    services.AddSingleton(dataContext);
+                    
+                    // Configure OpenTelemetry for distributed tracing
                     var otelSection = config.GetSection("OpenTelemetry");
                     var sourceNames = otelSection.GetSection("SourceNames").Get<string[]>() ?? new[] { "Warp" };
                     var otelEndpoint = otelSection.GetValue<string>("Endpoint") ?? "http://localhost:4317";
@@ -111,6 +116,7 @@ internal sealed class EPS
     private List<JobConfiguration> _jobConfigurations = new();
     private readonly CancellationTokenSource _cancellationTokenSource = new();
     private readonly ActivitySource _activitySource;
+    private readonly Dictionary<string, List<Func<HttpContext, Func<Task>, Task<bool>>>> _middlewareCache = new();
 
     public EPS(ILogger<EPS> logger, IConfiguration configuration, HttpClient httpClient, IServiceProvider serviceProvider, string sourceName)
     {
@@ -137,6 +143,47 @@ internal sealed class EPS
                 config.Name, config.ContextType, config.DeliveryType ?? "None");
         }
         
+        // Build middleware cache for each job configuration
+        await BuildMiddlewareCacheAsync();
+        
+        await Task.CompletedTask;
+    }
+
+    private async Task BuildMiddlewareCacheAsync()
+    {
+        _logger.LogInformation("Building middleware cache for job configurations...");
+        
+        var jobsSection = _configuration.GetSection("Jobs");
+        foreach (var jobSection in jobsSection.GetChildren())
+        {
+            var jobName = jobSection.Key;
+            
+            // Cache Predispatch middleware
+            var predispatchSection = jobSection.GetSection("Metadata:Predispatch");
+            if (predispatchSection.Exists())
+            {
+                _logger.LogInformation("Loading Predispatch middleware for job: {JobName}", jobName);
+                _middlewareCache[$"{jobName}_predispatch"] = 
+                    Warp.Core.Extensions.MiddlewarePipelineExtensions.CreateMiddlewareFromConfig(
+                        predispatchSection, _serviceProvider, $"{jobName}_predispatch");
+                _logger.LogInformation("Cached {Count} Predispatch middleware functions for job: {JobName}", 
+                    _middlewareCache[$"{jobName}_predispatch"].Count, jobName);
+            }
+            
+            // Cache Postdispatch middleware
+            var postdispatchSection = jobSection.GetSection("Metadata:Postdispatch");  
+            if (postdispatchSection.Exists())
+            {
+                _logger.LogInformation("Loading Postdispatch middleware for job: {JobName}", jobName);
+                _middlewareCache[$"{jobName}_postdispatch"] = 
+                    Warp.Core.Extensions.MiddlewarePipelineExtensions.CreateMiddlewareFromConfig(
+                        postdispatchSection, _serviceProvider, $"{jobName}_postdispatch");
+                _logger.LogInformation("Cached {Count} Postdispatch middleware functions for job: {JobName}", 
+                    _middlewareCache[$"{jobName}_postdispatch"].Count, jobName);
+            }
+        }
+        
+        _logger.LogInformation("Middleware cache built with {CacheCount} entries", _middlewareCache.Count);
         await Task.CompletedTask;
     }
 
@@ -216,13 +263,6 @@ internal sealed class EPS
         // Create job context instance
         var jobContext = CreateJobContext(jobConfig.ContextType, jobConfig.Name);
         
-        // Create result delivery instance (optional)
-        IJobResultDelivery? resultDelivery = null;
-        if (!string.IsNullOrEmpty(jobConfig.DeliveryType))
-        {
-            resultDelivery = CreateResultDelivery(jobConfig.DeliveryType, jobConfig.Name);
-        }
-        
         // Create concurrency limiter for this job type
         using var concurrencyLimiter = new SemaphoreSlim(jobConfig.MaxConcurrentJobs, jobConfig.MaxConcurrentJobs);
         
@@ -247,7 +287,7 @@ internal sealed class EPS
                         {
                             try
                             {
-                                await ProcessSingleJobAsync(job, jobContext, resultDelivery, jobConfig);
+                                await ProcessSingleJobAsync(job, jobContext, jobConfig);
                             }
                             finally
                             {
@@ -297,56 +337,25 @@ internal sealed class EPS
             // Get the configuration section for this job's context options
             var contextOptionsSection = _configuration.GetSection($"Jobs:{jobName}:Context:Options");
 
-            // Use reflection to determine constructor parameters
-            var constructor = type.GetConstructors().FirstOrDefault();
-            if (constructor == null)
+            // Create instance using parameterless constructor
+            var instance = Activator.CreateInstance(type);
+            if (instance is not IJobContext jobContext)
             {
-                throw new InvalidOperationException($"No constructor found for job context type: {contextType}");
+                throw new InvalidOperationException($"Failed to create instance of {contextType}");
             }
 
-            var parameters = constructor.GetParameters();
-            var args = new object[parameters.Length];
-
-            for (int i = 0; i < parameters.Length; i++)
+            // Get connection string and channel for initialization - must be explicitly configured
+            var connectionString = contextOptionsSection["ConnectionString"];
+            if (string.IsNullOrEmpty(connectionString))
             {
-                var param = parameters[i];
-                var paramName = param.Name;
-
-                if (paramName != null)
-                {
-                    var configValue = contextOptionsSection[paramName];
-                    if (configValue != null)
-                    {
-                        // Convert the value to the expected parameter type
-                        args[i] = param.ParameterType == typeof(int) 
-                            ? Convert.ToInt32(configValue) 
-                            : configValue.ToString() ?? "";
-                    }
-                    else
-                    {
-                        // Provide default values for common parameter names
-                        args[i] = paramName switch
-                        {
-                            "channel" => contextOptionsSection["Channel"] ?? "default",
-                            "connectionString" => contextOptionsSection["ConnectionString"] ?? "localhost:6379",
-                            "database" or "dbIndex" => Convert.ToInt32(contextOptionsSection["Database"] ?? "0"),
-                            _ => param.HasDefaultValue ? param.DefaultValue! : 
-                                 param.ParameterType.IsValueType ? Activator.CreateInstance(param.ParameterType)! : 
-                                 throw new InvalidOperationException($"Cannot resolve parameter {paramName} for job context {contextType}")
-                        };
-                    }
-                }
-                else
-                {
-                    // No options provided, use defaults
-                    args[i] = param.HasDefaultValue ? param.DefaultValue! : 
-                             param.ParameterType.IsValueType ? Activator.CreateInstance(param.ParameterType)! : 
-                             throw new InvalidOperationException($"Cannot resolve parameter {paramName} for job context {contextType}");
-                }
+                throw new InvalidOperationException($"No ConnectionString configured for job '{jobName}' context. Each job context must have a 'ConnectionString' in its Options section.");
             }
+            var channel = contextOptionsSection["Channel"] ?? jobName;
 
-            var instance = Activator.CreateInstance(type, args);
-            return (IJobContext)(instance ?? throw new InvalidOperationException($"Failed to create instance of {contextType}"));
+            // Initialize the job context using the new pattern
+            jobContext.Initialize(connectionString, channel);
+
+            return jobContext;
         }
         catch (Exception ex)
         {
@@ -354,62 +363,7 @@ internal sealed class EPS
         }
     }
 
-    private IJobResultDelivery? CreateResultDelivery(string deliveryType, string jobName)
-    {
-        var type = Type.GetType(deliveryType);
-        if (type == null)
-        {
-            _logger.LogWarning("Could not load result delivery type: {DeliveryType}", deliveryType);
-            return null;
-        }
-
-        try
-        {
-            _logger.LogDebug("Creating result delivery instance: {DeliveryType}", deliveryType);
-
-            // Use the base class pattern to find options type
-            var deliveryBaseType = type.GetResultDeliveryBaseType();
-            if (deliveryBaseType == null)
-            {
-                _logger.LogWarning("Result delivery type {DeliveryType} does not inherit from ResultDeliveryBase<>", deliveryType);
-                return null;
-            }
-
-            var optionsType = deliveryBaseType.GetGenericArguments()[0];
-            var deliveryName = $"delivery-{deliveryType}";
-
-            // Create options instance and bind configuration directly like middleware
-            var optionsInstance = Activator.CreateInstance(optionsType);
-            if (optionsInstance == null)
-            {
-                _logger.LogWarning("Could not create options instance for result delivery: {DeliveryType}", deliveryType);
-                return null;
-            }
-
-            // Get the configuration section for this job's delivery options
-            var deliveryOptionsSection = _configuration.GetSection($"Jobs:{jobName}:Delivery:Options");
-            if (deliveryOptionsSection.Exists())
-            {
-                _logger.LogDebug("Binding options for result delivery: {DeliveryType}", deliveryType);
-                deliveryOptionsSection.Bind(optionsInstance);
-            }
-
-            _logger.LogDebug("Creating delivery instance using ActivatorUtilities with base class pattern");
-            
-            // Use the warp pattern with ActivatorUtilities - base class constructor signature
-            var logger = _serviceProvider.GetRequiredService<ILoggerFactory>().CreateLogger(type);
-            var delivery = ActivatorUtilities.CreateInstance(_serviceProvider, type, deliveryName, logger, optionsInstance);
-            
-            return delivery as IJobResultDelivery;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to create result delivery instance for type: {DeliveryType}", deliveryType);
-            return null;
-        }
-    }
-
-    private async Task ProcessSingleJobAsync(Job job, IJobContext jobContext, IJobResultDelivery? resultDelivery, JobConfiguration jobConfig)
+    private async Task ProcessSingleJobAsync(Job job, IJobContext jobContext, JobConfiguration jobConfig)
     {
         // Create a new activity as a child of the original request's trace
         using var activity = CreateChildActivity(job, $"Job.Process.{jobConfig.Name}");
@@ -423,44 +377,11 @@ internal sealed class EPS
             _logger.LogInformation("Processing job: {JobId} (type: {JobType}) with trace: {TraceId}", 
                 job.Id, jobConfig.Name, activity?.TraceId.ToString() ?? "none");
             
-            // Get the endpoint from job configuration
-            var targetEndpoint = jobConfig.Endpoint;
-            if (string.IsNullOrEmpty(targetEndpoint))
-            {
-                // Fallback to global configuration
-                targetEndpoint = _configuration["Endpoint"] ?? "http://localhost:8000";
-            }
-            _logger.LogDebug("Using configured endpoint: {Endpoint}", targetEndpoint);
-
-            var syncPath = job.OriginalPath;
-            // Build the full sync URL
-            var syncUrl = $"{targetEndpoint.TrimEnd('/')}{syncPath}";
+            // Create HttpContext for middleware execution
+            var httpContext = CreateHttpContextFromJob(job, jobConfig);
             
-            _logger.LogInformation("Routing job to sync API: {SyncUrl}", syncUrl);
-            _logger.LogDebug("Job parameters: {Parameters}", JsonSerializer.Serialize(job.Parameters));
-            
-            // Reverse transforms to reconstruct original request
-            var originalParameters = await ReverseTransformsAsync(job);
-            _logger.LogDebug("Parameters after reverse transform: {Parameters}", JsonSerializer.Serialize(originalParameters));
-            
-            // Execute the job by dispatching to sync API
-            await ExecuteJobAsync(job, jobContext, syncUrl, originalParameters);
-            
-            // Deliver result if configured
-            if (resultDelivery != null && (job.Status == JobStatus.Completed || job.Status == JobStatus.Failed))
-            {
-                try
-                {
-                    await resultDelivery.DeliverAsync(job);
-                    _logger.LogInformation("Result delivered for job {JobId} via {DeliveryType}", 
-                        job.Id, resultDelivery.GetType().Name);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to deliver result for job {JobId}", job.Id);
-                    // Don't fail the job just because delivery failed
-                }
-            }
+            // Execute middleware pipeline around the job processing
+            await ExecuteJobWithMiddlewarePipeline(job, jobContext, jobConfig, httpContext);
         }
         catch (Exception ex)
         {
@@ -480,7 +401,109 @@ internal sealed class EPS
         }
     }
 
-    private async Task ExecuteJobAsync(Job job, IJobContext jobContext, string syncUrl, Dictionary<string, object?> originalParameters)
+    private HttpContext CreateHttpContextFromJob(Job job, JobConfiguration jobConfig)
+    {
+        var httpContext = new DefaultHttpContext();
+        httpContext.RequestServices = _serviceProvider;
+        
+        // Set up the request
+        httpContext.Request.Method = job.Parameters.ContainsKey("_httpMethod") && job.Parameters["_httpMethod"] is string method 
+            ? method.ToUpperInvariant() 
+            : "POST";
+        httpContext.Request.Path = job.OriginalPath;
+        
+        // Add headers from job
+        foreach (var header in job.Headers)
+        {
+            httpContext.Request.Headers[header.Key] = header.Value;
+        }
+        
+        // Store job information in HttpContext for middleware access
+        httpContext.Items["Job"] = job;
+        httpContext.Items["JobContext"] = jobConfig;
+        httpContext.Items["JobConfiguration"] = jobConfig;
+        
+        // Set up response stream for middleware
+        var responseStream = new MemoryStream();
+        httpContext.Response.Body = responseStream;
+        
+        return httpContext;
+    }
+
+    private async Task ExecuteJobWithMiddlewarePipeline(Job job, IJobContext jobContext, JobConfiguration jobConfig, HttpContext httpContext)
+    {
+        try
+        {
+            // Execute Predispatch middleware
+            if (_middlewareCache.TryGetValue($"{jobConfig.Name}_predispatch", out var predispatchMiddleware))
+            {
+                _logger.LogInformation("Executing {Count} Predispatch middleware functions for job: {JobId}", 
+                    predispatchMiddleware.Count, job.Id);
+                
+                foreach (var middlewareFunction in predispatchMiddleware)
+                {
+                    var shouldContinue = await middlewareFunction(httpContext, () => Task.CompletedTask);
+                    if (!shouldContinue)
+                    {
+                        _logger.LogInformation("Predispatch middleware stopped pipeline for job: {JobId}", job.Id);
+                        return; // Short-circuit the entire job execution
+                    }
+                }
+            }
+            
+            // Execute the actual job (HTTP call to downstream service)
+            await ExecuteJobHttpCall(job, jobContext, jobConfig, httpContext);
+            
+            // Execute Postdispatch middleware
+            if (_middlewareCache.TryGetValue($"{jobConfig.Name}_postdispatch", out var postdispatchMiddleware))
+            {
+                _logger.LogInformation("Executing {Count} Postdispatch middleware functions for job: {JobId}", 
+                    postdispatchMiddleware.Count, job.Id);
+                
+                foreach (var middlewareFunction in postdispatchMiddleware)
+                {
+                    var shouldContinue = await middlewareFunction(httpContext, () => Task.CompletedTask);
+                    if (!shouldContinue)
+                    {
+                        _logger.LogInformation("Postdispatch middleware stopped pipeline for job: {JobId}", job.Id);
+                        break; // Stop executing further postdispatch middleware
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in middleware pipeline for job {JobId}", job.Id);
+            throw;
+        }
+    }
+
+    private async Task ExecuteJobHttpCall(Job job, IJobContext jobContext, JobConfiguration jobConfig, HttpContext httpContext)
+    {
+        // Get the endpoint from job configuration - must be explicitly configured
+        var targetEndpoint = jobConfig.Endpoint;
+        if (string.IsNullOrEmpty(targetEndpoint))
+        {
+            throw new InvalidOperationException($"No endpoint configured for job '{jobConfig.Name}'. Each job must have an 'Endpoint' configured.");
+        }
+        _logger.LogDebug("Using configured endpoint: {Endpoint}", targetEndpoint);
+
+        var syncPath = job.OriginalPath;
+        // Build the full sync URL
+        var syncUrl = $"{targetEndpoint.TrimEnd('/')}{syncPath}";
+        
+        _logger.LogInformation("Routing job to sync API: {SyncUrl}", syncUrl);
+        _logger.LogDebug("Job parameters: {Parameters}", JsonSerializer.Serialize(job.Parameters));
+        
+        // Reverse transforms to reconstruct original request
+        var originalParameters = await ReverseTransformsAsync(job);
+        _logger.LogDebug("Parameters after reverse transform: {Parameters}", JsonSerializer.Serialize(originalParameters));
+        
+        // Execute the HTTP call and populate HttpContext.Response
+        await ExecuteJobHttpCallWithResponse(job, jobContext, syncUrl, originalParameters, httpContext);
+    }
+
+    private async Task ExecuteJobHttpCallWithResponse(Job job, IJobContext jobContext, string syncUrl, Dictionary<string, object?> originalParameters, HttpContext httpContext)
     {
         using var activity = _activitySource.StartActivity("Job.Execute.HttpCall");
         activity?.SetTag("job.id", job.Id);
@@ -525,12 +548,14 @@ internal sealed class EPS
                 request.RequestUri = new Uri(syncUrl);
             }
             
-            // Add headers from job
+            // Add headers from job - collect content headers for later
+            var contentHeaders = new List<KeyValuePair<string, string>>();
             foreach (var header in job.Headers)
             {
                 if (!request.Headers.TryAddWithoutValidation(header.Key, header.Value))
                 {
-                    // If it's a content header, we'll add it to content headers later
+                    // This is likely a content header, save it for later
+                    contentHeaders.Add(new KeyValuePair<string, string>(header.Key, header.Value));
                     _logger.LogDebug("Header {HeaderName} will be added to content headers", header.Key);
                 }
             }
@@ -594,11 +619,12 @@ internal sealed class EPS
                 }
                 
                 // Add content headers that couldn't be added to request headers
-                foreach (var header in job.Headers)
+                if (request.Content != null)
                 {
-                    if (!request.Headers.Contains(header.Key) && request.Content != null)
+                    foreach (var contentHeader in contentHeaders)
                     {
-                        request.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                        request.Content.Headers.TryAddWithoutValidation(contentHeader.Key, contentHeader.Value);
+                        _logger.LogDebug("Added content header: {HeaderName} = {HeaderValue}", contentHeader.Key, contentHeader.Value);
                     }
                 }
             }
@@ -617,6 +643,28 @@ internal sealed class EPS
                 
                 // Read response content
                 var responseContent = await response.Content.ReadAsStringAsync();
+                
+                // **POPULATE HTTPCONTEXT.RESPONSE WITH ACTUAL RESPONSE DATA**
+                httpContext.Response.StatusCode = (int)response.StatusCode;
+                httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "application/json";
+                
+                // Copy response headers
+                foreach (var header in response.Headers)
+                {
+                    httpContext.Response.Headers[header.Key] = header.Value.ToArray();
+                }
+                foreach (var header in response.Content.Headers)
+                {
+                    httpContext.Response.Headers[header.Key] = header.Value.ToArray();
+                }
+                
+                // Write response content to HttpContext.Response.Body
+                if (!string.IsNullOrEmpty(responseContent))
+                {
+                    var responseBytes = Encoding.UTF8.GetBytes(responseContent);
+                    httpContext.Response.Body = new MemoryStream(responseBytes);
+                    httpContext.Response.ContentLength = responseBytes.Length;
+                }
                 
                 _logger.LogInformation("✅ Job {JobId} completed in {ElapsedMs}ms with status {StatusCode}", 
                     job.Id, stopwatch.ElapsedMilliseconds, (int)response.StatusCode);

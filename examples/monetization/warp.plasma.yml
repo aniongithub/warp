@@ -21,7 +21,7 @@ Jobs:
       Predispatch:
         - Type: "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium"
           Options:
-            QuotaName: "free_quota"
+            QuotaName: "slips"
             QuotaType: "prepaid" # Prepaid quota type means we set a fixed quota and decrement it
             QuotaLimit: 5000 # Default quota for new users (5000 tokens until reset)
 

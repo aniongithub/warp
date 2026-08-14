@@ -106,9 +106,7 @@
             "program": "${workspaceFolder}/warp/bin/Debug/net9.0/warp.dll",
             "justMyCode": false,
             "env": {
-                "MEMORYALPHA_RAG_API_ADDR": "http://memoryalpha-rag-api:8000",
                 "WARP_CONFIG_BASE_DIR": "./examples/async", // This is all we need to configure
-                "REDIS_CONNECTION_STRING": "redis:6379"
             },
             "presentation": {
                 "hidden": true
@@ -128,12 +126,64 @@
             }
         },
         {
-            "name": "Memory Alpha Chat",
+            "name": "Chat (async)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/examples/async/chat/main.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/examples/async/chat",
+            "presentation": {
+                "hidden": true
+            }
+        },
+
+        {
+            "name": "Warp (monetization)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp/bin/Debug/net9.0/warp.dll",
+            "justMyCode": false,
+            "env": {
+                "WARP_CONFIG_BASE_DIR": "./examples/monetization", // This is all we need to configure
+            },
+            "presentation": {
+                "hidden": true
+            }
+        },
+        {
+            "name": "Warp.Plasma (monetization)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp.plasma/bin/Debug/net9.0/warp.plasma.dll",
+            "env": {
+                "WARP_CONFIG_BASE_DIR": "./examples/monetization" // This is all we need to configure
+            },
+            "presentation": {
+                "hidden": true
+            }
+        },
+        {
+            "name": "Warp.Latinum (monetization)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-dotnet",
+            "program": "${workspaceFolder}/warp.latinum/bin/Debug/net9.0/warp.latinum.dll",
+            "env": {
+                "WARP_CONFIG_BASE_DIR": "./examples/monetization" // This is all we need to configure
+            },
+            "presentation": {
+                "hidden": true
+            }
+        },
+        {
+            "name": "Chat (monetization)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/examples/monetization/chat/main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/examples/monetization/chat",
             "presentation": {
                 "hidden": true
             }
@@ -147,17 +197,34 @@
         },
         {
             "name": "Warp JWT & ApiKeys",
-            "configurations": ["Warp (apikeys)", "DevApi (apikeys)"],
+            "configurations": [
+                "Warp (apikeys)", 
+                "DevApi (apikeys)"],
             "stopAll": true
         },
         {
             "name": "Warp Permissions & Quotas",
-            "configurations": ["Warp (quotas)", "DevApi (quotas)", "AdminApi (quotas)"],
+            "configurations": [
+                "Warp (quotas)", 
+                "DevApi (quotas)", 
+                "AdminApi (quotas)"],
             "stopAll": true
         },
         {
-            "name": "Warp Async API",
-            "configurations": ["Warp (async)", "Warp.Plasma (async)", "Memory Alpha Chat"],
+            "name": "Warp Async",
+            "configurations": [
+                "Warp (async)", 
+                "Warp.Plasma (async)", 
+                "Chat (async)"],
+            "stopAll": true
+        },
+        {
+            "name": "Warp Monetization",
+            "configurations": [
+                "Warp (monetization)", 
+                "Warp.Plasma (monetization)", 
+                "Warp.Latinum (monetization)", 
+                "Chat (monetization)"],
             "stopAll": true
         }
     ]

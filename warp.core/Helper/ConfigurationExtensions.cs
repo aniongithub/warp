@@ -153,7 +153,35 @@ public static class ConfigurationExtensions
             }
             else if (kvp.Value is Dictionary<string, object> nestedObject)
             {
-                hasChanges |= ProcessIncludes(nestedObject, baseDirectory);
+                // Check if this nested object contains a single $include directive
+                // Pattern: ParentKey: { $include: "file" }
+                if (nestedObject.Count == 1 && nestedObject.ContainsKey("$include"))
+                {
+                    var includePath = nestedObject["$include"]?.ToString();
+                    if (!string.IsNullOrEmpty(includePath))
+                    {
+                        // Use the parent key as the target key
+                        includesToProcess.Add(("$include", kvp.Key, includePath));
+                        // Mark this nested object for removal (it will be replaced by the include content)
+                        yamlObject[kvp.Key] = new Dictionary<string, object>(); // Temporary placeholder
+                    }
+                }
+                else
+                {
+                    // Recursively process nested objects that are not simple includes
+                    hasChanges |= ProcessIncludes(nestedObject, baseDirectory);
+                }
+            }
+            else if (kvp.Value is List<object> nestedList)
+            {
+                // Process includes in list items that are dictionaries
+                for (int i = 0; i < nestedList.Count; i++)
+                {
+                    if (nestedList[i] is Dictionary<string, object> listItemDict)
+                    {
+                        hasChanges |= ProcessIncludes(listItemDict, baseDirectory);
+                    }
+                }
             }
         }
 
@@ -168,26 +196,32 @@ public static class ConfigurationExtensions
             {
                 var includeContent = File.ReadAllText(fullIncludePath);
                 var includeRoot = deserializer.Deserialize<object>(includeContent);
-                var includeObject = NormalizeYaml(includeRoot) as Dictionary<string, object>;
+                var normalizedInclude = NormalizeYaml(includeRoot);
 
-                if (includeObject != null)
+                if (normalizedInclude != null)
                 {
-                    // Process nested includes and env vars in the included file recursively
-                    ProcessConfigurationRecursively(includeObject, baseDirectory);
+                    // Process nested includes and env vars in the included content recursively
+                    if (normalizedInclude is Dictionary<string, object> includeObject)
+                    {
+                        ProcessConfigurationRecursively(includeObject, baseDirectory);
+                    }
 
                     // Merge the included configuration
                     if (targetKey == null)
                     {
                         // Direct merge: $include: "file"
-                        foreach (var includeKvp in includeObject)
+                        if (normalizedInclude is Dictionary<string, object> includeDictionary)
                         {
-                            yamlObject[includeKvp.Key] = includeKvp.Value;
+                            foreach (var includeKvp in includeDictionary)
+                            {
+                                yamlObject[includeKvp.Key] = includeKvp.Value;
+                            }
                         }
                     }
                     else
                     {
-                        // Keyed merge: $include:admin: "file"
-                        yamlObject[targetKey] = includeObject;
+                        // Keyed merge: $include:admin: "file" or Plans: { $include: "file" }
+                        yamlObject[targetKey] = normalizedInclude;
                     }
                     hasChanges = true;
                 }

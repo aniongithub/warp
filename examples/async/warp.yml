@@ -12,7 +12,7 @@ ReverseProxy:
       Destinations:
         memoryalpha:
           # We can use an environment variable to configure the service address
-          Address: ${MEMORYALPHA_RAG_API_ADDR}
+          Address: ${MEMORYALPHA_RAG_API_ADDR:http://memoryalpha-rag-api:8000}
 
   Routes:
     # Asynchronous API route - handles all async operations (submit, status, result, cancel)
@@ -38,6 +38,13 @@ ReverseProxy:
               DefaultPermissions:
                 - "user"
 
+          # Ensure quota is available for job submission
+          - Type: "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium"
+            Options:
+              QuotaName: "free_quota"
+              QuotaType: "prepaid" # Prepaid quota type means we set a fixed quota and decrement it
+              QuotaLimit: 5000 # Default quota for new users (5000 tokens until reset)
+
         Predispatch:
           # Validate requests for job submission only
           - Type: "Warp.Dilithium.Middleware.OpenApiValidator, warp.dilithium"
@@ -47,8 +54,7 @@ ReverseProxy:
           # Handle all async operations (submit, status, result, cancel)
           - Type: "Warp.Dilithium.Middleware.RedisAsyncApiHandler, warp.dilithium"
             Options:
-              ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379}"
-              DatabaseIndex: 0
+              ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379,defaultDatabase=0}"
               Channel: "memoryalpha_async"
               MaxConcurrentDispatches: 10
               DispatchTimeoutMs: 30000

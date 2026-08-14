@@ -5,14 +5,32 @@ namespace Warp.Core.Job.Contexts;
 
 public class RedisJobContext : JobContextBase
 {
-    private readonly IDatabase _db;
-    private readonly string _channel;
+    private IDatabase? _db;
+    private string _channel = string.Empty;
 
-    public RedisJobContext(string channel, string connectionString, int dbIndex = 0)
+    public RedisJobContext()
     {
-        var multiplexer = ConnectionMultiplexer.Connect(connectionString);
-        _db = multiplexer.GetDatabase(dbIndex);
+        // Parameterless constructor for generic instantiation
+    }
+
+    public override void Initialize(string connectionString, string channel)
+    {
+        // Parse connection string for Redis
+        // Format: "localhost:6379" or "localhost:6379,database=1" etc.
+        var configOptions = ConfigurationOptions.Parse(connectionString);
+        
         _channel = channel;
+        
+        var multiplexer = ConnectionMultiplexer.Connect(configOptions);
+        _db = multiplexer.GetDatabase();
+    }
+
+    private void EnsureInitialized()
+    {
+        if (_db == null)
+        {
+            throw new InvalidOperationException("RedisJobContext has not been initialized. Call Initialize() first.");
+        }
     }
 
     private string JobKey(string id, JobStatus status, string userId) => $"channel:{_channel}:job:{id}@{status}:{userId}";
@@ -22,6 +40,7 @@ public class RedisJobContext : JobContextBase
 
     public override async Task EnqueueJobAsync<T>(T job)
     {
+        EnsureInitialized();
         // TODO: Replace with proper logging
         Console.WriteLine($"Enqueuing job: {job.Id}");
         if (string.IsNullOrEmpty(job.User?.Id)) throw new ArgumentException("User.Id required");
@@ -31,7 +50,7 @@ public class RedisJobContext : JobContextBase
         try
         {
             Console.WriteLine($"Storing job in Redis with key: {key}");
-            await _db.StringSetAsync(key, SerializeJob(job));
+            await _db!.StringSetAsync(key, SerializeJob(job));
         
             Console.WriteLine($"Pushing job ID to queue: {queueKey}");
             await _db.ListRightPushAsync(queueKey, job.Id);
@@ -45,8 +64,9 @@ public class RedisJobContext : JobContextBase
 
     public override async Task<DequeueResult<T>> DequeueJobAsync<T>()
     {
+        EnsureInitialized();
         // Pop job ID from the QUEUED queue (FIFO)
-        var jobIdValue = await _db.ListLeftPopAsync(QueueKey(JobStatus.Queued));
+        var jobIdValue = await _db!.ListLeftPopAsync(QueueKey(JobStatus.Queued));
         
         if (!jobIdValue.HasValue || string.IsNullOrEmpty(jobIdValue))
         {
@@ -104,22 +124,51 @@ public class RedisJobContext : JobContextBase
 
     public override async Task<T> LookupJobAsync<T>(string id, JobStatus status, string userId)
     {
-        var key = JobKey(id, status, userId);
-        var jobData = await _db.StringGetAsync(key);
-        var jobStr = jobData.ToString();
+        EnsureInitialized();
         
-        if (!jobData.HasValue || string.IsNullOrEmpty(jobStr))
-            throw new KeyNotFoundException($"Job {id} not found");
+        // If userId is "*", use wildcard pattern search
+        if (userId == "*")
+        {
+            var server = _db!.Multiplexer.GetServer(_db.Multiplexer.GetEndPoints().First());
+            var pattern = JobKey(id, status, "*");
+            var keys = server.Keys(pattern: pattern).ToList();
             
-        return DeserializeJob<T>(jobStr);
+            if (keys.Count == 0)
+            {
+                throw new KeyNotFoundException($"Job {id} not found");
+            }
+            
+            var jobKey = keys.First();
+            var jobData = await _db.StringGetAsync(jobKey);
+            
+            if (!jobData.HasValue || string.IsNullOrEmpty(jobData))
+            {
+                throw new KeyNotFoundException($"Job {id} not found");
+            }
+            
+            return DeserializeJob<T>(jobData.ToString());
+        }
+        else
+        {
+            // Standard exact lookup
+            var key = JobKey(id, status, userId);
+            var jobData = await _db!.StringGetAsync(key);
+            var jobStr = jobData.ToString();
+            
+            if (!jobData.HasValue || string.IsNullOrEmpty(jobStr))
+                throw new KeyNotFoundException($"Job {id} not found");
+                
+            return DeserializeJob<T>(jobStr);
+        }
     }
 
     public override async Task<JobStatus> GetJobStatusAsync(string id, string userId)
     {
+        EnsureInitialized();
         foreach (JobStatus status in Enum.GetValues(typeof(JobStatus)))
         {
             var key = JobKey(id, status, userId);
-            if (await _db.KeyExistsAsync(key))
+            if (await _db!.KeyExistsAsync(key))
                 return status;
         }
         throw new KeyNotFoundException("Job not found");
@@ -127,8 +176,9 @@ public class RedisJobContext : JobContextBase
 
     public override async Task<IAsyncEnumerable<T>> ListJobs<T>(string userId, JobStatus status, int batchSize)
     {
+        EnsureInitialized();
         var pattern = JobKey("*", status, userId);
-        var server = _db.Multiplexer.GetServer(_db.Multiplexer.GetEndPoints().First());
+        var server = _db!.Multiplexer.GetServer(_db.Multiplexer.GetEndPoints().First());
         var keys = server.Keys(pattern: pattern, pageSize: batchSize).ToList();
         var jobs = new List<T>();
         foreach (var key in keys)
@@ -146,6 +196,7 @@ public class RedisJobContext : JobContextBase
 
     public override async Task UpdateJobAsync<T>(T job, JobStatus newStatus, string? error = null, string? output = null)
     {
+        EnsureInitialized();
         if (string.IsNullOrEmpty(job.User?.Id)) throw new ArgumentException("User.Id required");
         
         var oldKey = JobKey(job.Id, job.Status, job.User.Id);
@@ -163,11 +214,65 @@ public class RedisJobContext : JobContextBase
             job.Output = output;
         
         // Move job to new status
-        await _db.StringSetAsync(newKey, SerializeJob(job));
+        await _db!.StringSetAsync(newKey, SerializeJob(job));
         await _db.ListRightPushAsync(QueueKey(newStatus), job.Id);
         
         // Remove from old status
         await _db.KeyDeleteAsync(oldKey);
         await _db.ListRemoveAsync(QueueKey(oldStatus), job.Id);
+    }
+
+    public override async Task<bool> UpdateJobStatusAsync(string jobId, JobStatus fromStatus, JobStatus toStatus, string userId, string? error = null, string? output = null)
+    {
+        EnsureInitialized();
+        
+        // Find the job with the from status (using wildcard if userId is "*")
+        Job? job = null;
+        try
+        {
+            job = await LookupJobAsync<Job>(jobId, fromStatus, userId);
+        }
+        catch (KeyNotFoundException)
+        {
+            // Job not found in the expected status
+            return false;
+        }
+        
+        if (job == null)
+            return false;
+            
+        // Get the actual user ID for key construction
+        var actualUserId = job.User?.Id ?? "";
+        if (string.IsNullOrEmpty(actualUserId))
+            return false;
+            
+        var fromKey = JobKey(jobId, fromStatus, actualUserId);
+        var toKey = JobKey(jobId, toStatus, actualUserId);
+        
+        // Use Redis transaction for atomicity
+        var transaction = _db!.CreateTransaction();
+        
+        // Only proceed if the from key still exists (ensures atomicity)
+        transaction.AddCondition(Condition.KeyExists(fromKey));
+        
+        // Update job properties
+        job.Status = toStatus;
+        job.EndedAt = DateTime.UtcNow;
+        
+        if (!string.IsNullOrEmpty(error))
+            job.Error = error;
+        
+        if (!string.IsNullOrEmpty(output))
+            job.Output = output;
+        
+        // Queue the operations
+        _ = transaction.StringSetAsync(toKey, SerializeJob(job));
+        _ = transaction.ListRightPushAsync(QueueKey(toStatus), jobId);
+        _ = transaction.KeyDeleteAsync(fromKey);
+        _ = transaction.ListRemoveAsync(QueueKey(fromStatus), jobId);
+        
+        // Execute atomically
+        var success = await transaction.ExecuteAsync();
+        return success;
     }
 }

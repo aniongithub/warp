@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
 using Warp.Core.Data;
+using Warp.Core.Extensions;
 using Warp.Core.Middleware;
 
 namespace Warp.Dilithium.Middleware
@@ -37,7 +38,7 @@ namespace Warp.Dilithium.Middleware
             }
 
             // 2. Get user or API key identifier (from header or context)
-            string key = ResolveKey(context);
+            string key = context.ResolveKey(Options.KeyHeaders);
             if (string.IsNullOrEmpty(key))
             {
                 return Results
@@ -101,21 +102,6 @@ namespace Warp.Dilithium.Middleware
                 .Continue();
         }
 
-        private string ResolveKey(HttpContext context)
-        {
-            if (Options.KeyHeaders != null)
-            {
-                foreach (var header in Options.KeyHeaders)
-                {
-                    if (!string.IsNullOrEmpty(header) && context.Request.Headers.TryGetValue(header, out var headerVals))
-                    {
-                        var val = headerVals.FirstOrDefault();
-                        if (!string.IsNullOrEmpty(val))
-                            return val;
-                    }
-                }
-            }
-            return string.Empty;
-        }
+
     }
 }

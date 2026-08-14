@@ -62,7 +62,7 @@ services:
     networks:
       - warp-network
   
-  # Enable any backends you need here
+  # Enable any data storage backends you need here
   # postgres:
   #   image: postgres:16.4
   #   user: "1000:1000"
@@ -121,6 +121,20 @@ services:
         ollama pull $$DEFAULT_IMAGE_MODEL
         wait
       '
+
+  stripe-mock:
+    image: stripemock/stripe-mock:latest
+    ports:
+      - "12111:12111"
+    networks:
+      - warp-network
+    environment:
+      # Configure stripe-mock to send webhooks to our controller
+      - STRIPE_WEBHOOK_SECRET=whsec_test_secret
+      # Note: stripe-mock sends webhooks to all URLs in STRIPE_WEBHOOK_ENDPOINTS (space-separated)
+      # We'll configure this to point to warp.latinum on internal port 5004
+      - STRIPE_WEBHOOK_ENDPOINTS=http://warp:5004/stripe/payment
+    
 networks:
   warp-network:
     driver: bridge

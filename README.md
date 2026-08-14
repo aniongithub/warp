@@ -41,6 +41,7 @@ This architecture allows us to put Warp together in a variety of ways with pure 
 - **[JWT/API Key auth & Developer API](examples/apikeys/README.md)** - JWT and/or API key authentication with developer portal key management
 - **[Quotas & Permissions](examples/quotas/README.md)** - Flexible, permission-based quota tracking with usage-monitoring.
 - **[Async-ification of synchronous APIs](examples/async/README.md)** - Transform synchronous APIs to asynchronous job processing with real-time notifications and end-to-end OpenTelemetry tracking
+- **[Monetization with Stripe](examples/monetization/README.md)** - Monetize API usage with Stripe: one-time credit purchases (prepaid quota) and recurring subscriptions (postpaid plan quota), reconciled via auto-registered webhooks
 
 ## Persistence and Data Storage
 

@@ -92,7 +92,7 @@ ReverseProxy:
             Options:
               QuotaName: "free_quota"
               QuotaType: "prepaid" # Prepaid quota type means we set a fixed quota and decrement it
-              DefaultQuota: 5000 # Default quota for new users (5000 tokens until reset)
+              QuotaLimit: 5000 # Default quota for new users (5000 tokens until reset)
 
         Predispatch:
           # This section runs after transforms have been applied but before the request is sent to the destination.

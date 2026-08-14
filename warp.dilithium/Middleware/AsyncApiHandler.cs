@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Warp.Core.Data;
 using Warp.Core.Job;
+using Warp.Core.Job.Contexts;
 using Warp.Core.Middleware;
 using Warp.Dilithium.Transforms;
 using Yarp.ReverseProxy.Model;
@@ -17,6 +18,7 @@ public abstract class AsyncApiHandlerOptions : MiddlewareOptions
     public Dictionary<string, InputMapping> Input { get; set; } = new();
     public string UserIdHeader { get; set; } = "X-JWT-Email";
     public string Channel { get; set; } = string.Empty;
+    public string ConnectionString { get; set; } = "redis:6379";
     
     /// <summary>
     /// Global blob transform configuration applied to all file uploads automatically
@@ -54,15 +56,21 @@ public class OperationContext
     public string RemainingPath { get; set; } = string.Empty;
 }
 
-public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDisposable where TOptions : AsyncApiHandlerOptions
+public abstract class AsyncApiHandler<TOptions, TJobContext> : MiddlewareBase<TOptions>, IDisposable 
+    where TOptions : AsyncApiHandlerOptions
+    where TJobContext : IJobContext, new()
 {
     private readonly SemaphoreSlim _concurrencyLimiter;
     private bool _disposed = false;
+    
+    protected TJobContext JobContext { get; }
 
     protected AsyncApiHandler(string name, ILogger logger, IDataContext context, TOptions options) 
         : base(name, logger, context, options)
     {
         _concurrencyLimiter = new SemaphoreSlim(options.MaxConcurrentDispatches, options.MaxConcurrentDispatches);
+        JobContext = new TJobContext();
+        JobContext.Initialize(options.ConnectionString, options.Channel);
     }
 
     protected override async Task<IResult> ProcessAsync(HttpContext context)
@@ -117,32 +125,37 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
     protected virtual OperationContext? DetermineOperation(string path, string method)
     {
         var operationType = GetOperationType(path, method);
-        
+
         if (operationType == "Sync")
             return null; // Not an async operation
-        
+
         var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        
+
         return operationType switch
         {
             "AsyncSubmit" => new OperationContext { Type = AsyncOperation.Submit },
-            "AsyncStatus" => new OperationContext 
-            { 
-                Type = AsyncOperation.Status, 
-                JobId = segments.Length > 0 ? segments[^1] : null 
+            "AsyncStatus" => new OperationContext
+            {
+                Type = AsyncOperation.Status,
+                JobId = segments.Length > 0 ? segments[^1] : null
             },
-            "AsyncResult" => new OperationContext 
-            { 
-                Type = AsyncOperation.Result, 
-                JobId = segments.Length > 0 ? segments[^1] : null 
+            "AsyncResult" => new OperationContext
+            {
+                Type = AsyncOperation.Result,
+                JobId = segments.Length > 0 ? segments[^1] : null
             },
-            "AsyncCancel" => new OperationContext 
-            { 
-                Type = AsyncOperation.Cancel, 
-                JobId = segments.Length > 0 ? segments[^1] : null 
+            "AsyncCancel" => new OperationContext
+            {
+                Type = AsyncOperation.Cancel,
+                JobId = segments.Length > 0 ? segments[^1] : null
             },
             _ => null
         };
+    }
+
+    protected virtual async Task<object> GetSubmitResponse(Job job)
+    {
+        return new { job.Id, statusCode = 202 };
     }
 
     private async Task<IResult> HandleSubmit(HttpContext context, OperationContext operation)
@@ -172,12 +185,15 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
             var routingInfo = ExtractRoutingInfo(context);
             var tracingContext = ExtractTracingContext(context);
             var user = await GetUserAsync(context);
-            var jobId = await CreateAndEnqueueJobAsync(user, extractedInputs, parameterMappings, routingInfo, tracingContext);
+            var job = await CreateJobAsync(user, extractedInputs, parameterMappings, routingInfo, tracingContext);
+            await JobContext.EnqueueJobAsync(job);
             
-            Logger.LogDebug("Job {JobId} submitted successfully, releasing concurrency slot", jobId);
+            Logger.LogDebug("Job {JobId} submitted successfully, releasing concurrency slot", job.Id);
+
+            var response = await GetSubmitResponse(job);
             
             return Results
-                .Json(new { jobId }, statusCode: 202)
+                .Json(response)
                 .Stop();
         }
         finally
@@ -246,21 +262,88 @@ public abstract class AsyncApiHandler<TOptions> : MiddlewareBase<TOptions>, IDis
         {
             throw new ArgumentException($"Missing user id header: {Options.UserIdHeader}");
         }
-        
+
         var user = DataContext.Users.FirstOrDefault(u => u.Email == userEmail);
         if (user == null)
         {
             throw new KeyNotFoundException($"User not found: {userEmail}");
         }
-        
+
         return Task.FromResult(user);
     }
 
-    // Abstract methods for concrete implementations
-    protected abstract Task<string> CreateAndEnqueueJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo, TracingContext tracingContext);
-    protected abstract Task<JobStatus> GetJobStatusAsync(string jobId, string userId);
-    protected abstract Task<JobResult> GetJobResultAsync(string jobId, string userId);
-    protected abstract Task CancelJobAsync(string jobId, string userId);
+    // Default implementations using job context - can be overridden if needed
+    protected virtual async Task<Job> CreateJobAsync(IUser user, Dictionary<string, object?> extractedInputs, Dictionary<string, ParameterMapping> parameterMappings, JobRoutingInfo routingInfo, TracingContext tracingContext)
+    {
+        var job = new Job
+        {
+            User = user,
+            QueuedAt = DateTime.UtcNow,
+            Status = JobStatus.Queued,
+            OriginalPath = routingInfo.OriginalPath,
+            ClusterId = routingInfo.ClusterId,
+            TargetDestination = routingInfo.TargetDestination,
+            Parameters = extractedInputs,
+            Headers = routingInfo.Headers,
+            ParameterMappings = parameterMappings,
+            TraceParent = tracingContext.TraceParent,
+            TraceState = tracingContext.TraceState
+        };
+
+        return job;
+    }
+
+    protected virtual async Task<JobStatus> GetJobStatusAsync(string jobId, string userId)
+    {
+        return await JobContext.GetJobStatusAsync(jobId, userId);
+    }
+
+    protected virtual async Task<JobResult> GetJobResultAsync(string jobId, string userId)
+    {
+        Job? job = null;
+        foreach (JobStatus status in Enum.GetValues(typeof(JobStatus)))
+        {
+            job = await JobContext.LookupJobAsync<Job>(jobId, status, userId);
+            if (job != null) break;
+        }
+
+        if (job == null)
+        {
+            throw new KeyNotFoundException($"Job '{jobId}' not found");
+        }
+
+        return new JobResult
+        {
+            JobId = job.Id,
+            Status = job.Status,
+            QueuedAt = job.QueuedAt,
+            StartedAt = job.StartedAt,
+            EndedAt = job.EndedAt,
+            Error = job.Error,
+            Output = job.Output
+        };
+    }
+
+    protected virtual async Task CancelJobAsync(string jobId, string userId)
+    {
+        var currentStatus = await JobContext.GetJobStatusAsync(jobId, userId);
+        
+        if (currentStatus == JobStatus.Completed || currentStatus == JobStatus.Failed || currentStatus == JobStatus.Canceled)
+        {
+            throw new InvalidOperationException($"Cannot cancel job '{jobId}' - it is already {currentStatus}");
+        }
+
+        var job = await JobContext.LookupJobAsync<Job>(jobId, currentStatus, userId);
+        if (job == null)
+        {
+            throw new KeyNotFoundException($"Job '{jobId}' not found");
+        }
+
+        job.Status = JobStatus.Canceled;
+        job.EndedAt = DateTime.UtcNow;
+
+        await JobContext.EnqueueJobAsync(job);
+    }
 
     // Helper method to extract tracing context
     protected TracingContext ExtractTracingContext(HttpContext context)

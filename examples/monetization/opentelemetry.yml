@@ -1,0 +1,3 @@
+# OpenTelemetry Configuration
+OpenTelemetry:
+  Endpoint: "${OTEL_ENDPOINT:http://otel-collector:4317}" # OTLP endpoint

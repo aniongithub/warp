@@ -95,11 +95,42 @@
         ws.onmessage = function(event) {
             console.log('WebSocket message received:', event.data);
             const data = JSON.parse(event.data);
+            
             // Remove any "thinking" messages (searching/loading messages)
             const thinkingMessages = messages.querySelectorAll('.message.thinking');
             thinkingMessages.forEach(msg => msg.remove());
             
-            addMessage(data.answer, 'assistant');
+            // Check if this is an error response
+            if (data.error || data.status === 'failed' || (data.httpStatusCode && data.httpStatusCode >= 400)) {
+                let errorMessage = 'Sorry, there was an error processing your question.';
+                
+                // Extract error message from various possible fields
+                if (data.error) {
+                    errorMessage = data.error;
+                } else if (data.result && typeof data.result === 'string' && data.result.includes('error')) {
+                    errorMessage = data.result;
+                }
+                
+                // Handle specific HTTP status codes that might come from the webhook payload
+                if (data.httpStatusCode === 429) {
+                    errorMessage = 'Quota exceeded. Please try again later.';
+                } else if (data.httpStatusCode === 401 || data.httpStatusCode === 403) {
+                    errorMessage = 'Access denied. Please check your permissions.';
+                } else if (data.httpStatusCode >= 500) {
+                    errorMessage = 'Server error. Please try again later.';
+                }
+                
+                addMessage(errorMessage, 'assistant');
+            } else if (data.answer) {
+                // Success case - display the answer
+                addMessage(data.answer, 'assistant');
+            } else if (data.result) {
+                // Fallback - use result field if no answer field
+                addMessage(data.result, 'assistant');
+            } else {
+                // Unknown response format
+                addMessage('Received an unexpected response format.', 'assistant');
+            }
         };
 
         ws.onopen = function() {
@@ -143,13 +174,56 @@
                 });
                 
                 if (!response.ok) {
-                    throw new Error('Failed to submit question');
+                    // Remove thinking message since we got an error submitting
+                    const thinkingMessages = messages.querySelectorAll('.message.thinking');
+                    thinkingMessages.forEach(msg => msg.remove());
+                    
+                    // Handle specific submission error status codes
+                    let errorMessage = 'Sorry, failed to submit question.';
+                    if (response.status === 429) {
+                        errorMessage = 'Quota exceeded. Please try again later.';
+                    } else if (response.status === 401 || response.status === 403) {
+                        errorMessage = 'Access denied. Please check your permissions.';
+                    } else if (response.status === 400) {
+                        errorMessage = 'Invalid request. Please check your question and try again.';
+                    } else if (response.status >= 500) {
+                        errorMessage = 'Server error. Please try again later.';
+                    } else {
+                        // Try to get error details from response
+                        try {
+                            const errorText = await response.text();
+                            if (errorText) {
+                                try {
+                                    const errorData = JSON.parse(errorText);
+                                    errorMessage = errorData.error || errorData.message || errorMessage;
+                                } catch {
+                                    // If not JSON, use text but limit length
+                                    errorMessage = errorText.length > 100 ? errorText.substring(0, 100) + '...' : errorText;
+                                }
+                            }
+                        } catch {
+                            // If we can't read response, use default message
+                        }
+                    }
+                    
+                    addMessage(errorMessage, 'assistant');
+                    return;
                 }
+                
+                // If successful submission (202), the WebSocket will handle the actual response
+                // Don't re-enable the button yet - wait for WebSocket response
+                return;
+                
             } catch (error) {
-                addMessage('Sorry, failed to submit question. Please try again.', 'assistant');
-            } finally {
-                btn.disabled = false;
+                // Remove thinking message on network/other errors
+                const thinkingMessages = messages.querySelectorAll('.message.thinking');
+                thinkingMessages.forEach(msg => msg.remove());
+                
+                addMessage('Sorry, failed to submit question. Please check your connection and try again.', 'assistant');
             }
+            
+            // Re-enable button - we only get here on errors (catch block or !response.ok)
+            btn.disabled = false;
         }
 
         input.addEventListener('keypress', function(e) {

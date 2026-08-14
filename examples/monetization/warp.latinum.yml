@@ -1,0 +1,35 @@
+# Warp.Latinum Configuration for Monetization Example
+
+$include: 
+  - datacontext.yml
+  - opentelemetry.yml
+
+Kestrel:
+  Endpoints:
+    Internal:
+      Url: "http://0.0.0.0:5004"
+
+# Job context configuration for webhook processing
+JobContext:
+  ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379,defaultDatabase=0}"
+  Channel: "stripe_payment_async" # Default channel, webhooks will look in both payment and subscription channels
+
+# Controllers to register
+Controllers:
+  - Type: "Warp.Latinum.Controllers.StripeWebhookController, warp.latinum"
+    Options:
+      # Subscription plans configuration (from shared file)
+      Plans:
+        $include: stripe-plans.yml
+
+      # Payment webhook configuration
+      NgrokAuthToken: "${NGROK_AUTH_TOKEN:}"
+      StripeSecretKey: "${STRIPE_SECRET_KEY:}"
+      KeyHeaders: 
+        - "X-JWT-Email"
+        - "X-Api-Key"      
+
+      # Subscription webhook configuration (for controller attribute)
+      WebhookUrl: "${STRIPE_SUBSCRIPTION_WEBHOOK_URL:}"
+      StripePublishableKey: "${STRIPE_PUBLISHABLE_KEY:}"
+      WebhookSecret: "${STRIPE_WEBHOOK_SECRET:}"
