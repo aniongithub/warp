@@ -22,14 +22,6 @@ RUN curl -SL --output /tmp/dotnet-install.sh https://dot.net/v1/dotnet-install.s
     bash /tmp/dotnet-install.sh --runtime aspnetcore --version 9.0.5 --install-dir /usr/share/dotnet && \
     rm /tmp/dotnet-install.sh
 
-# Install and build our fork of yarp for post-transform fixes
-WORKDIR /usr/local/packages
-RUN cd /usr/local/src &&\
-    git clone https://github.com/aniongithub/yarp.git &&\
-        cd yarp &&\
-        git checkout backport-post-transform-hook &&\
-        dotnet pack --configuration Release --output /usr/local/packages
-
 # Install Google Cloud CLI
 RUN apt-get update && apt-get install -y curl gnupg \
   && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.cloud.google.com/apt cloud-sdk main" \
