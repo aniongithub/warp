@@ -222,6 +222,42 @@ public class SqliteDataContext : IDataContext
         return Task.FromResult(result);
     }
 
+    public Task SettleQuotaAsync(string quotaId, float delta)
+    {
+        using var conn = new SqliteConnection(_connectionString);
+        conn.Open();
+        SetBusyTimeout(conn);
+
+        // A single UPDATE is atomic in SQLite. The reservation was already admitted, so the
+        // adjustment is unconditional; MAX(0, ...) floors Used so an over-refund cannot go negative.
+        var update = conn.CreateCommand();
+        update.CommandText = @"
+        UPDATE Quotas SET Used = MAX(0, Used + $delta)
+        WHERE Id = $id;";
+        update.Parameters.AddWithValue("$delta", delta);
+        update.Parameters.AddWithValue("$id", quotaId);
+        update.ExecuteNonQuery();
+        return Task.CompletedTask;
+    }
+
+    public Task GrantQuotaAsync(string quotaId, float amount)
+    {
+        using var conn = new SqliteConnection(_connectionString);
+        conn.Open();
+        SetBusyTimeout(conn);
+
+        // A single UPDATE is atomic in SQLite, so concurrent grants cannot lose updates on the
+        // credit-granting (money-in) path (previously a read-modify-write on Limit).
+        var update = conn.CreateCommand();
+        update.CommandText = @"
+        UPDATE Quotas SET QuotaLimit = QuotaLimit + $amount
+        WHERE Id = $id;";
+        update.Parameters.AddWithValue("$amount", amount);
+        update.Parameters.AddWithValue("$id", quotaId);
+        update.ExecuteNonQuery();
+        return Task.CompletedTask;
+    }
+
     public Task<bool> TryConsumeRateLimitAsync(string key, float rateLimitHz, float maxTokens, DateTime now)
     {
         using var conn = new SqliteConnection(_connectionString);

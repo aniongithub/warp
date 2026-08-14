@@ -359,9 +359,13 @@ public class StripeWebhookController : ControllerBase
 
         if (existingQuota != null)
         {
-            existingQuota.Limit += quotaIncrease;
-            existingQuota.Type = "prepaid";
-            await _dataContext.UpsertAsync(existingQuota, q => q.Key == userId && q.QuotaName == quotaName);
+            // Atomically grant the credits on the money-in path. Previously this was a non-atomic
+            // read-modify-write (existingQuota.Limit += quotaIncrease) with the same lost-update race
+            // that #30 fixed on the consume side; concurrent grants to the same quota could clobber
+            // each other. GrantQuotaAsync performs the increment as a single atomic store operation.
+            // Double-grant on webhook redelivery is prevented upstream by the job-status CAS
+            // (UpdateJobStatusAsync Queued->Completed): only the first delivery reaches this code.
+            await _dataContext.GrantQuotaAsync(existingQuota.Id, quotaIncrease);
         }
         else
         {

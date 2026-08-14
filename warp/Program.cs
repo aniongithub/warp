@@ -57,6 +57,26 @@ app.UseRequestTimeouts();
 
 var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
 
+// Resolve the gateway-side trust marker configuration. The gateway injects a shared-secret marker
+// (X-Gateway-Auth) onto forwarded requests so downstream backends (warp.apis.developer) trust the
+// identity it establishes even across hosts; it also strips client-supplied identity/marker headers
+// so a client cannot spoof them. When no secret is configured this is a no-op (warn once) so existing
+// loopback/dev deployments keep working.
+var gatewayAuth = Warp.Gateway.GatewayAuthInjector.ResolveOptions(config);
+if (Warp.Gateway.GatewayAuthInjector.IsActive(gatewayAuth))
+{
+    logger.LogInformation(
+        "Gateway auth injection enabled: stripping client-supplied identity/marker headers and injecting '{Header}' on forwarded requests.",
+        gatewayAuth.HeaderName);
+}
+else
+{
+    logger.LogWarning(
+        "GATEWAY_SHARED_SECRET / GatewayTrust:SharedSecret is not set: the gateway will NOT inject the '{Header}' trust marker. " +
+        "Cross-host backends fall back to loopback-only trust; identity headers are forwarded unchanged for local/dev setups.",
+        gatewayAuth.HeaderName);
+}
+
 // Pre-build and cache middleware for each route and phase
 var middlewareCache = new Dictionary<string, List<Func<HttpContext, Func<Task>, Task<bool>>>>();
 foreach (var route in routesSection.GetChildren())
@@ -144,6 +164,16 @@ else
 // YARP per-route middleware using MapReverseProxy with extension methods
 app.MapReverseProxy(proxyPipeline =>
 {
+    // GATEWAY TRUST MARKER: runs first for every proxied request. Strips any client-supplied identity
+    // and marker headers (so they cannot be spoofed), then injects the shared-secret X-Gateway-Auth
+    // marker so trusted backends honor the identity the gateway establishes downstream. No-op when no
+    // shared secret is configured.
+    proxyPipeline.Use(async (context, next) =>
+    {
+        Warp.Gateway.GatewayAuthInjector.Apply(context, gatewayAuth);
+        await next(context);
+    });
+
     // PREPROCESS: runs before YARP transforms
     proxyPipeline.Use(async (context, next) =>
     {

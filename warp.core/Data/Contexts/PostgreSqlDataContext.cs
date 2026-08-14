@@ -275,6 +275,46 @@ public class PostgreSqlDataContext : IDataContext
         return result;
     }
 
+    public async Task SettleQuotaAsync(string quotaId, float delta)
+    {
+        using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync();
+        using var tx = await conn.BeginTransactionAsync();
+
+        // Unconditional atomic adjustment: the reservation was already admitted, so settling never
+        // fails on the prepaid limit. GREATEST(0, ...) floors Used so an over-refund cannot go negative.
+        var update = conn.CreateCommand();
+        update.Transaction = tx;
+        update.CommandText = @"
+        UPDATE Quotas SET Used = GREATEST(0, Used + $1)
+        WHERE Id = $2;";
+        update.Parameters.AddWithValue(delta);
+        update.Parameters.AddWithValue(quotaId);
+        await update.ExecuteNonQueryAsync();
+
+        await tx.CommitAsync();
+    }
+
+    public async Task GrantQuotaAsync(string quotaId, float amount)
+    {
+        using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync();
+        using var tx = await conn.BeginTransactionAsync();
+
+        // A single conditional-free UPDATE inside the transaction performs the increment atomically,
+        // so concurrent grants on the money-in path cannot lose updates.
+        var update = conn.CreateCommand();
+        update.Transaction = tx;
+        update.CommandText = @"
+        UPDATE Quotas SET QuotaLimit = QuotaLimit + $1
+        WHERE Id = $2;";
+        update.Parameters.AddWithValue(amount);
+        update.Parameters.AddWithValue(quotaId);
+        await update.ExecuteNonQueryAsync();
+
+        await tx.CommitAsync();
+    }
+
     public async Task<bool> TryConsumeRateLimitAsync(string key, float rateLimitHz, float maxTokens, DateTime now)
     {
         using var conn = new NpgsqlConnection(_connectionString);
