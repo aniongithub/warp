@@ -179,28 +179,31 @@ public class StripePaymentControllerAttribute : PaymentControllerAttribute
         var authBytes = Encoding.ASCII.GetBytes($"{options.StripeSecretKey}:");
         httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", Convert.ToBase64String(authBytes));
 
+        // Resolve the Stripe API base (trim trailing slash to avoid building "//v1/...").
+        var apiBase = options.StripeApiBase.TrimEnd('/');
+
         // Step 1: Check if webhook already exists
-        var existingWebhookId = await FindExistingWebhookAsync(httpClient, logger, webhookName);
+        var existingWebhookId = await FindExistingWebhookAsync(httpClient, logger, apiBase, webhookName);
 
         if (!string.IsNullOrEmpty(existingWebhookId))
         {
             // Step 2a: Update existing webhook
             logger.LogInformation("Updating existing Stripe webhook {WebhookId} with URL: {WebhookUrl}", existingWebhookId, fullWebhookUrl);
-            await UpdateWebhookAsync(httpClient, logger, existingWebhookId, fullWebhookUrl, events);
+            await UpdateWebhookAsync(httpClient, logger, apiBase, existingWebhookId, fullWebhookUrl, events);
         }
         else
         {
             // Step 2b: Create new webhook
             logger.LogInformation("Creating new Stripe webhook with URL: {WebhookUrl}", fullWebhookUrl);
-            await CreateWebhookAsync(httpClient, logger, fullWebhookUrl, events, webhookName);
+            await CreateWebhookAsync(httpClient, logger, apiBase, fullWebhookUrl, events, webhookName);
         }
     }
 
-    private async Task<string?> FindExistingWebhookAsync(HttpClient httpClient, ILogger logger, string webhookName)
+    private async Task<string?> FindExistingWebhookAsync(HttpClient httpClient, ILogger logger, string apiBase, string webhookName)
     {
         try
         {
-            var response = await httpClient.GetAsync("https://api.stripe.com/v1/webhook_endpoints?limit=100");
+            var response = await httpClient.GetAsync($"{apiBase}/v1/webhook_endpoints?limit=100");
             if (!response.IsSuccessStatusCode)
             {
                 logger.LogWarning("Failed to list existing webhooks: {StatusCode}", response.StatusCode);
@@ -229,7 +232,7 @@ public class StripePaymentControllerAttribute : PaymentControllerAttribute
         }
     }
 
-    private async Task UpdateWebhookAsync(HttpClient httpClient, ILogger logger, string webhookId, string webhookUrl, string[] events)
+    private async Task UpdateWebhookAsync(HttpClient httpClient, ILogger logger, string apiBase, string webhookId, string webhookUrl, string[] events)
     {
         var formData = new List<KeyValuePair<string, string>>
         {
@@ -242,7 +245,7 @@ public class StripePaymentControllerAttribute : PaymentControllerAttribute
         }
 
         var content = new FormUrlEncodedContent(formData);
-        var response = await httpClient.PostAsync($"https://api.stripe.com/v1/webhook_endpoints/{webhookId}", content);
+        var response = await httpClient.PostAsync($"{apiBase}/v1/webhook_endpoints/{webhookId}", content);
 
         if (response.IsSuccessStatusCode)
         {
@@ -260,7 +263,7 @@ public class StripePaymentControllerAttribute : PaymentControllerAttribute
         }
     }
 
-    private async Task CreateWebhookAsync(HttpClient httpClient, ILogger logger, string webhookUrl, string[] events, string webhookName)
+    private async Task CreateWebhookAsync(HttpClient httpClient, ILogger logger, string apiBase, string webhookUrl, string[] events, string webhookName)
     {
         var formData = new List<KeyValuePair<string, string>>
         {
@@ -275,7 +278,7 @@ public class StripePaymentControllerAttribute : PaymentControllerAttribute
         }
 
         var content = new FormUrlEncodedContent(formData);
-        var response = await httpClient.PostAsync("https://api.stripe.com/v1/webhook_endpoints", content);
+        var response = await httpClient.PostAsync($"{apiBase}/v1/webhook_endpoints", content);
 
         if (response.IsSuccessStatusCode)
         {
