@@ -5,6 +5,16 @@ $include: "datacontext.yml" # Use an include to share configuration definitions 
 api_settings:
   api_key_prefix: "warp_" # Prefix
 
+# Gateway header-trust guard.
+# The Developer API trusts X-JWT-Email / X-Permissions to identify the caller. Those headers are only
+# safe when the request comes through the Warp gateway (which authenticates the JWT first). This guard is
+# ON by default and strips those identity headers from any request that is not from a trusted upstream
+# (loopback, or one carrying the shared-secret marker header below).
+GatewayTrust:
+  Enabled: true                          # Set to false ONLY if the Developer API is unreachable except via the gateway.
+  HeaderName: "X-Gateway-Auth"           # Marker header the gateway injects to prove the request passed through it.
+  SharedSecret: "${GATEWAY_SHARED_SECRET:}" # Value of the marker header; inject via GATEWAY_SHARED_SECRET. When empty, only loopback is trusted.
+
 Kestrel:
   Endpoints:
     Internal:

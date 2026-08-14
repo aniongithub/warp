@@ -19,10 +19,32 @@ public class JwtValidatorOptions: MiddlewareOptions
     public List<string> ValidIssuers { get; set; } = new();
     public string AudienceWildcard { get; set; } = "*";
     public SecurityKey? SigningKey { get; set; }
-    public bool ValidateSigningKey { get; set; } = false;
+
+    /// <summary>
+    /// When true (the secure default), incoming JWTs MUST carry a valid signature that can be
+    /// verified against the configured symmetric secret, <see cref="SigningKey"/>, or the keys
+    /// discovered from <see cref="JwksUri"/>. If no verification material is available the
+    /// middleware fails closed and rejects the request instead of trusting the token.
+    /// </summary>
+    public bool ValidateSigningKey { get; set; } = true;
+
+    /// <summary>
+    /// EXPLICIT, DANGEROUS opt-out for local/dev only. When true, signature validation is skipped
+    /// entirely and ANY well-formed JWT is accepted. This must never be enabled in production.
+    /// It is intentionally separate from <see cref="ValidateSigningKey"/> so that turning off
+    /// signature checks is always a deliberate, auditable choice.
+    /// </summary>
+    public bool AllowUnsignedTokensInsecure { get; set; } = false;
+
     public string? Algorithm { get; set; } // Optional, for extensibility
     public List<string> ValidEmails { get; set; } = new();
     public string? JwksUri { get; set; } // JWKS endpoint for public key discovery
+
+    /// <summary>
+    /// How long (in seconds) JWKS signing keys are cached before a background refresh is attempted.
+    /// The keys are cached in-process and reused across requests instead of being fetched per request.
+    /// </summary>
+    public int JwksCacheLifetimeSeconds { get; set; } = 3600;
 
     public bool CreateUserIfNotFound { get; set; } = true;
     public List<string> DefaultPermissions { get; set; } = new();
@@ -30,15 +52,25 @@ public class JwtValidatorOptions: MiddlewareOptions
 
 public sealed class JwtValidator : MiddlewareBase<JwtValidatorOptions>
 {
+    // A single shared HttpClient avoids socket exhaustion for JWKS fetches.
+    private static readonly HttpClient _httpClient = new();
+
     private string _headerName = "Authorization";
     private List<string> _validAudiences = new();
     private List<string> _validIssuers = new();
     private string _audienceWildcard = "*";
     private SecurityKey? _signingKey;
-    private bool _validateSigningKey = false;
+    private bool _validateSigningKey = true;
+    private bool _allowUnsignedTokensInsecure = false;
     private string? _algorithm;
     private List<string> _validEmails = new();
     private string? _jwksUri;
+
+    // JWKS key cache (shared across all requests handled by this middleware instance).
+    private readonly SemaphoreSlim _jwksLock = new(1, 1);
+    private readonly TimeSpan _jwksCacheLifetime;
+    private IList<SecurityKey>? _cachedJwksKeys;
+    private DateTime _jwksCacheTimestampUtc = DateTime.MinValue;
 
     public JwtValidator(string name, ILogger logger, IDataContext context, JwtValidatorOptions options)
         : base(name, logger, context, options)
@@ -49,11 +81,31 @@ public sealed class JwtValidator : MiddlewareBase<JwtValidatorOptions>
         _audienceWildcard = options.AudienceWildcard ?? "*";
         _signingKey = options.SigningKey;
         _validateSigningKey = options.ValidateSigningKey;
+        _allowUnsignedTokensInsecure = options.AllowUnsignedTokensInsecure;
         _algorithm = options.Algorithm;
         _validEmails = options.ValidEmails ?? new();
         _jwksUri = options.JwksUri;
+        _jwksCacheLifetime = TimeSpan.FromSeconds(options.JwksCacheLifetimeSeconds > 0 ? options.JwksCacheLifetimeSeconds : 3600);
 
-        Logger.LogDebug("JwtValidator configured with: HeaderName={HeaderName}, Audiences={Audiences}, Issuers={Issuers}, JWKS={JWKS}, ValidateSigningKey={ValidateSigningKey}", _headerName, string.Join(",", _validAudiences), string.Join(",", _validIssuers), _jwksUri, _validateSigningKey);
+        if (_allowUnsignedTokensInsecure)
+        {
+            Logger.LogWarning(
+                "SECURITY: JwtValidator '{Name}' is running with AllowUnsignedTokensInsecure=true. " +
+                "JWT signatures are NOT being verified and any well-formed token will be accepted. " +
+                "This must only ever be used for local development.", Name);
+        }
+        else if (!_validateSigningKey)
+        {
+            // Legacy config compatibility: ValidateSigningKey=false no longer opens the gate on its own.
+            // Signature verification stays required (fail closed); the operator must set the explicit
+            // AllowUnsignedTokensInsecure flag to actually disable it.
+            Logger.LogWarning(
+                "JwtValidator '{Name}' has ValidateSigningKey=false, but signature validation now fails " +
+                "closed by default. Tokens will still be signature-verified. To intentionally accept " +
+                "unsigned tokens (dev only) set AllowUnsignedTokensInsecure=true.", Name);
+        }
+
+        Logger.LogDebug("JwtValidator configured with: HeaderName={HeaderName}, Audiences={Audiences}, Issuers={Issuers}, JWKS={JWKS}, ValidateSigningKey={ValidateSigningKey}, AllowUnsignedTokensInsecure={Insecure}", _headerName, string.Join(",", _validAudiences), string.Join(",", _validIssuers), _jwksUri, _validateSigningKey, _allowUnsignedTokensInsecure);
     }
 
     protected override async Task<IResult> ProcessAsync(HttpContext context)
@@ -78,41 +130,63 @@ public sealed class JwtValidator : MiddlewareBase<JwtValidatorOptions>
             ValidateAudience = _validAudiences.Count > 0 && !_validAudiences.Contains(_audienceWildcard),
             ValidAudiences = _validAudiences,
             ValidateLifetime = true,
-            ClockSkew = TimeSpan.FromMinutes(2),
-            ValidateIssuerSigningKey = _validateSigningKey && _signingKey != null,
-            IssuerSigningKey = _signingKey,
-            RequireSignedTokens = _validateSigningKey && _signingKey != null
+            ClockSkew = TimeSpan.FromMinutes(2)
         };
 
-        if (!_validateSigningKey)
+        if (_allowUnsignedTokensInsecure)
         {
-            Logger.LogInformation("Signature validation is disabled. Any JWT will be accepted.");
-            validationParameters.SignatureValidator = (token, parameters) => new JwtSecurityToken(token);
+            // Explicit, dangerous, dev-only opt-out. Skip signature verification entirely.
+            Logger.LogWarning("SECURITY: Signature validation is disabled (AllowUnsignedTokensInsecure=true). Accepting token without verifying its signature.");
+            validationParameters.ValidateIssuerSigningKey = false;
+            validationParameters.RequireSignedTokens = false;
+            validationParameters.SignatureValidator = (t, p) => new JwtSecurityToken(t);
         }
-
-        if (_validateSigningKey && string.IsNullOrEmpty(_signingKey?.KeyId) && !string.IsNullOrEmpty(_jwksUri))
+        else
         {
-            Logger.LogInformation("Fetching signing keys from JWKS URI: {JWKS}", _jwksUri);
-            try
+            // Secure default: fail closed. A verifiable signing key MUST be available.
+            validationParameters.ValidateIssuerSigningKey = true;
+            validationParameters.RequireSignedTokens = true;
+
+            var hasKeyMaterial = false;
+
+            if (_signingKey != null)
             {
-                var keys = await GetSigningKeysFromJwksAsync(_jwksUri);
-                if (keys.Count > 0)
+                // Symmetric secret or explicitly-configured key. Do not weaken this path.
+                validationParameters.IssuerSigningKey = _signingKey;
+                hasKeyMaterial = true;
+            }
+
+            // Prefer JWKS discovery when no explicit key (or the key lacks a KeyId to match against).
+            if (!string.IsNullOrEmpty(_jwksUri) && (_signingKey == null || string.IsNullOrEmpty(_signingKey.KeyId)))
+            {
+                try
                 {
-                    Logger.LogInformation("Fetched {KeyCount} signing keys from JWKS.", keys.Count);
-                    validationParameters.IssuerSigningKeys = keys;
-                    validationParameters.ValidateIssuerSigningKey = true;
-                    validationParameters.RequireSignedTokens = true;
+                    var keys = await GetCachedSigningKeysAsync(_jwksUri!);
+                    if (keys.Count > 0)
+                    {
+                        validationParameters.IssuerSigningKeys = keys;
+                        hasKeyMaterial = true;
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    Logger.LogWarning("No signing keys found at JWKS URI: {JWKS}", _jwksUri);
+                    Logger.LogError(ex, "Failed to obtain signing keys from JWKS URI: {JWKS}", _jwksUri);
+                    return Results
+                        .Problem(statusCode: 500, title: "Internal Server Error", detail: "Failed to fetch JWKS keys.")
+                        .Stop();
                 }
             }
-            catch (Exception ex)
+
+            if (!hasKeyMaterial)
             {
-                Logger.LogError(ex, "Failed to fetch signing keys from JWKS URI: {JWKS}", _jwksUri);
+                // No way to verify the signature and the operator has not explicitly opted into
+                // insecure mode. Fail closed rather than silently trusting the token.
+                Logger.LogError(
+                    "SECURITY: JwtValidator '{Name}' cannot verify token signatures because no symmetric secret, " +
+                    "signing key, or JWKS URI is configured, and AllowUnsignedTokensInsecure is false. Rejecting request.",
+                    Name);
                 return Results
-                    .Problem(statusCode: 500, title: "Internal Server Error", detail: "Failed to fetch JWKS keys.")
+                    .Problem(statusCode: 500, title: "Internal Server Error", detail: "JWT signing key is not configured.")
                     .Stop();
             }
         }
@@ -208,10 +282,55 @@ public sealed class JwtValidator : MiddlewareBase<JwtValidatorOptions>
         }
     }
 
+    /// <summary>
+    /// Returns the JWKS signing keys, using an in-process cache that is refreshed at most once per
+    /// <see cref="JwtValidatorOptions.JwksCacheLifetimeSeconds"/>. If a refresh fails but previously
+    /// cached keys exist, the stale keys are reused so a transient JWKS outage does not take down auth.
+    /// </summary>
+    private async Task<IList<SecurityKey>> GetCachedSigningKeysAsync(string jwksUri)
+    {
+        if (_cachedJwksKeys != null && DateTime.UtcNow - _jwksCacheTimestampUtc < _jwksCacheLifetime)
+            return _cachedJwksKeys;
+
+        await _jwksLock.WaitAsync();
+        try
+        {
+            // Double-check after acquiring the lock in case another request just refreshed.
+            if (_cachedJwksKeys != null && DateTime.UtcNow - _jwksCacheTimestampUtc < _jwksCacheLifetime)
+                return _cachedJwksKeys;
+
+            try
+            {
+                Logger.LogInformation("Refreshing signing keys from JWKS URI: {JWKS}", jwksUri);
+                var keys = await GetSigningKeysFromJwksAsync(jwksUri);
+                if (keys.Count > 0)
+                {
+                    _cachedJwksKeys = keys;
+                    _jwksCacheTimestampUtc = DateTime.UtcNow;
+                    Logger.LogInformation("Cached {KeyCount} signing keys from JWKS (refresh interval {Interval}s).", keys.Count, _jwksCacheLifetime.TotalSeconds);
+                }
+                else
+                {
+                    Logger.LogWarning("No signing keys found at JWKS URI: {JWKS}", jwksUri);
+                }
+            }
+            catch (Exception ex) when (_cachedJwksKeys != null)
+            {
+                // Serve stale keys on refresh failure rather than failing auth entirely.
+                Logger.LogWarning(ex, "Failed to refresh JWKS from {JWKS}; continuing to use cached keys.", jwksUri);
+            }
+
+            return _cachedJwksKeys ?? new List<SecurityKey>();
+        }
+        finally
+        {
+            _jwksLock.Release();
+        }
+    }
+
     private async Task<IList<SecurityKey>> GetSigningKeysFromJwksAsync(string jwksUri)
     {
-        using var httpClient = new HttpClient();
-        var jwksJson = await httpClient.GetStringAsync(jwksUri);
+        var jwksJson = await _httpClient.GetStringAsync(jwksUri);
         using var doc = JsonDocument.Parse(jwksJson);
         var keys = new List<SecurityKey>();
         if (doc.RootElement.TryGetProperty("keys", out var keysElement))

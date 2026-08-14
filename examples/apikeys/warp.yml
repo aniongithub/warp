@@ -32,8 +32,16 @@ ReverseProxy:
             Options:
               ValidAudiences: ["memoryalpha-dev"] # Expected audience in JWT
               ValidIssuers: ["https://accounts.google.com"] # Google as JWT issuer
+              # Signature validation is REQUIRED by default (fail closed). Leaving this true (or omitting
+              # it) means a token is rejected unless it verifies against JwksUri or a symmetric Secret.
               ValidateSigningKey: true # Validate JWT signature
               JwksUri: "https://www.googleapis.com/oauth2/v3/certs" # Google's JWKS endpoint
+              # JWKS signing keys are cached in-process and refreshed on this interval (seconds) instead
+              # of being fetched on every request. Default: 3600.
+              JwksCacheLifetimeSeconds: 3600
+              # DANGER / dev-only escape hatch: when true, tokens are accepted WITHOUT any signature
+              # verification. Off by default and must never be enabled in production.
+              AllowUnsignedTokensInsecure: false
               DefaultPermissions: # Default permissions for new JWT users
                 - "developer"
                 - "user"

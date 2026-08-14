@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
@@ -10,6 +11,38 @@ using Warp.Latinum.Middleware.Stripe;
 
 namespace Warp.Latinum.Controllers;
 
+/// <summary>
+/// Options for the Stripe webhook controller. Bound from the controller's <c>Options</c> configuration
+/// section (see <c>ControllerExtensions.AddControllersFromConfig</c>). Controls signature verification
+/// of inbound Stripe webhooks.
+/// </summary>
+public class StripeWebhookOptions
+{
+    /// <summary>
+    /// When true (default), inbound webhooks must carry a valid <c>Stripe-Signature</c> that verifies
+    /// against the configured signing secret. Requests that fail verification are rejected with 400.
+    /// </summary>
+    public bool VerifySignature { get; set; } = true;
+
+    /// <summary>
+    /// EXPLICIT dev/test bypass. When true, signature verification is skipped entirely. Off by default
+    /// and must never be enabled in production.
+    /// </summary>
+    public bool AllowUnverifiedWebhooksInsecure { get; set; } = false;
+
+    /// <summary>Shared/default webhook signing secret (e.g. from <c>${STRIPE_WEBHOOK_SECRET:}</c>).</summary>
+    public string? WebhookSecret { get; set; }
+
+    /// <summary>Signing secret for the payment webhook endpoint. Falls back to <see cref="WebhookSecret"/>.</summary>
+    public string? PaymentWebhookSecret { get; set; }
+
+    /// <summary>Signing secret for the subscription webhook endpoint. Falls back to the payment secret.</summary>
+    public string? SubscriptionWebhookSecret { get; set; }
+
+    /// <summary>Allowed timestamp tolerance (seconds) when verifying the Stripe signature.</summary>
+    public long SignatureToleranceSeconds { get; set; } = 300;
+}
+
 [ApiController]
 [Route("/stripe")]
 [StripePaymentController(Events = new[] { "payment_intent.succeeded", "payment_intent.payment_failed" })]
@@ -19,14 +52,32 @@ public class StripeWebhookController : ControllerBase
     private readonly IDataContext _dataContext;
     private readonly ILogger<StripeWebhookController> _logger;
     private readonly StripePaymentOptions _options;
+    private readonly StripeWebhookOptions _webhookOptions;
     private readonly IJobContext _jobContext;
+    private readonly string? _paymentWebhookSecret;
+    private readonly string? _subscriptionWebhookSecret;
 
-    public StripeWebhookController(IDataContext dataContext, ILogger<StripeWebhookController> logger, IOptions<StripePaymentOptions> options)
+    public StripeWebhookController(IDataContext dataContext, ILogger<StripeWebhookController> logger, IOptions<StripePaymentOptions> options, IOptions<StripeWebhookOptions> webhookOptions)
     {
         _dataContext = dataContext;
         _logger = logger;
         _options = options.Value;
-        
+        _webhookOptions = webhookOptions.Value;
+
+        // Resolve per-endpoint signing secrets. Config values take precedence, then environment
+        // variables, then a sensible fallback (subscription falls back to the payment secret).
+        _paymentWebhookSecret = FirstNonEmpty(
+            _webhookOptions.PaymentWebhookSecret,
+            _webhookOptions.WebhookSecret,
+            Environment.GetEnvironmentVariable("STRIPE_WEBHOOK_SECRET"));
+        _subscriptionWebhookSecret = FirstNonEmpty(
+            _webhookOptions.SubscriptionWebhookSecret,
+            Environment.GetEnvironmentVariable("STRIPE_SUBSCRIPTION_WEBHOOK_SECRET"),
+            _paymentWebhookSecret);
+
+        if (_webhookOptions.AllowUnverifiedWebhooksInsecure || !_webhookOptions.VerifySignature)
+            _logger.LogWarning("SECURITY: Stripe webhook signature verification is DISABLED. Inbound webhooks will be processed without verifying their signature. Never use this in production.");
+
         // Initialize JobContext once in constructor.
         // Payment jobs always live in the stripe_payment_async channel (the channel is part
         // of the Redis key), so use it explicitly rather than the unset StripePaymentOptions
@@ -36,11 +87,76 @@ public class StripeWebhookController : ControllerBase
         _jobContext = jobContext;
     }
 
+    private static string? FirstNonEmpty(params string?[] values)
+        => values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+
+    /// <summary>
+    /// Reads the raw request body and, unless verification is disabled, validates the Stripe signature
+    /// against the provided signing secret. Returns an error result on failure, otherwise the parsed
+    /// webhook payload. The raw body (not a model-bound copy) is required for signature verification.
+    /// </summary>
+    private async Task<(IActionResult? Error, JsonElement Data)> ReadAndVerifyAsync(string? signingSecret, string kind)
+    {
+        string json;
+        using (var reader = new StreamReader(Request.Body, Encoding.UTF8))
+            json = await reader.ReadToEndAsync();
+
+        if (_webhookOptions.AllowUnverifiedWebhooksInsecure || !_webhookOptions.VerifySignature)
+        {
+            _logger.LogWarning("Processing unverified Stripe {Kind} webhook (signature verification disabled).", kind);
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(signingSecret))
+            {
+                _logger.LogError(
+                    "Stripe {Kind} webhook signing secret is not configured; rejecting request (fail closed). " +
+                    "Set STRIPE_WEBHOOK_SECRET (and STRIPE_SUBSCRIPTION_WEBHOOK_SECRET if the endpoints differ).", kind);
+                return (StatusCode(500, "Webhook signing secret not configured"), default);
+            }
+
+            var signatureHeader = Request.Headers["Stripe-Signature"].FirstOrDefault();
+            if (string.IsNullOrEmpty(signatureHeader))
+            {
+                _logger.LogWarning("Stripe {Kind} webhook missing Stripe-Signature header", kind);
+                return (BadRequest("Missing Stripe-Signature header"), default);
+            }
+
+            try
+            {
+                // Throws StripeException if the signature or timestamp does not verify.
+                Stripe.EventUtility.ConstructEvent(
+                    json, signatureHeader, signingSecret,
+                    _webhookOptions.SignatureToleranceSeconds,
+                    throwOnApiVersionMismatch: false);
+            }
+            catch (Stripe.StripeException ex)
+            {
+                _logger.LogWarning(ex, "Stripe {Kind} webhook signature verification failed", kind);
+                return (BadRequest("Invalid Stripe signature"), default);
+            }
+        }
+
+        try
+        {
+            return (null, JsonSerializer.Deserialize<JsonElement>(json));
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Stripe {Kind} webhook body was not valid JSON", kind);
+            return (BadRequest("Invalid JSON payload"), default);
+        }
+    }
+
     [HttpPost("subscription")]
-    public async Task<IActionResult> HandleSubscriptionWebhook([FromBody] JsonElement webhookData)
+    public async Task<IActionResult> HandleSubscriptionWebhook()
     {
         try
         {
+            var (verifyError, webhookData) = await ReadAndVerifyAsync(_subscriptionWebhookSecret, "subscription");
+            if (verifyError != null)
+                return verifyError;
+
             // Extract event type to filter relevant events
             if (!webhookData.TryGetProperty("type", out var eventTypeElement))
             {
@@ -122,10 +238,14 @@ public class StripeWebhookController : ControllerBase
     }
 
     [HttpPost("payment")]
-    public async Task<IActionResult> HandlePaymentWebhook([FromBody] JsonElement webhookData)
+    public async Task<IActionResult> HandlePaymentWebhook()
     {
         try
         {
+            var (verifyError, webhookData) = await ReadAndVerifyAsync(_paymentWebhookSecret, "payment");
+            if (verifyError != null)
+                return verifyError;
+
             _logger.LogInformation("Received Stripe webhook: {WebhookType}", 
                 webhookData.TryGetProperty("type", out var typeElement) ? typeElement.GetString() : "unknown");
 
