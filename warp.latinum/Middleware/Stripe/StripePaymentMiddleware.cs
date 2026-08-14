@@ -33,7 +33,7 @@ public class StripePaymentOptions : AsyncApiHandlerOptions
     public string[] Events { get; set; } = new[] { "payment_intent.succeeded", "payment_intent.payment_failed" };
     public List<string> KeyHeaders { get; set; } = new() { "X-JWT-Email", "X-Api-Key" };
     public string? NgrokAuthToken { get; set; }
-    public string WebhookName { get; set; } = "Warp Monetization Webhook";
+    public string WebhookName { get; set; } = "Warp Purchase Webhook";
     
     // Note: ConnectionString and Channel are inherited from AsyncApiHandlerOptions
 }

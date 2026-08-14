@@ -15,6 +15,17 @@ RUN apt-get update && apt-get install -y \
     procps \
     && apt-get clean
 
+# Install ngrok (used by warp.latinum DEBUG webhook auto-registration).
+# Baked into the image so it is present regardless of how the container is
+# started (docker compose or the devcontainer CLI); the devcontainer "ngrok"
+# Feature is only applied when built through the devcontainer CLI.
+RUN curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
+      | gpg --dearmor -o /usr/share/keyrings/ngrok.gpg \
+  && echo "deb [signed-by=/usr/share/keyrings/ngrok.gpg] https://ngrok-agent.s3.amazonaws.com buster main" \
+      | tee /etc/apt/sources.list.d/ngrok.list \
+  && apt-get update && apt-get install -y ngrok \
+  && apt-get clean
+
 # Install the .NET SDK for ASP.NET Core 10.0 (preview)
 RUN curl -SL --output /tmp/dotnet-install.sh https://dot.net/v1/dotnet-install.sh && \
     bash /tmp/dotnet-install.sh --version 10.0.100-preview.5.25265.106 --install-dir /usr/share/dotnet && \
