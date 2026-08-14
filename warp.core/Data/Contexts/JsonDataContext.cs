@@ -8,6 +8,10 @@ public class JsonDataContext : IDataContext
     private readonly string _filePath;
     private DataStore _store;
 
+    // Serializes atomic read-modify-write operations within this process. The JSON backend is
+    // single-instance only, so a process-wide lock is sufficient to close the metering races.
+    private readonly object _syncRoot = new();
+
     private FileSystemWatcher? _watcher;
     private DateTime _lastReload = DateTime.MinValue;
 
@@ -112,6 +116,60 @@ public class JsonDataContext : IDataContext
     {
         // For simplicity, just call SaveAsync (real implementation would use filter)
         return SaveAsync(entity);
+    }
+
+    public Task<QuotaConsumeResult> TryConsumeQuotaAsync(string quotaId, float amount)
+    {
+        lock (_syncRoot)
+        {
+            var quota = _store.Quotas.FirstOrDefault(q => q.Id == quotaId);
+            if (quota == null)
+                return Task.FromResult(QuotaConsumeResult.NotFound);
+
+            if (quota.Type == "prepaid" && quota.Used + amount > quota.Limit)
+                return Task.FromResult(QuotaConsumeResult.LimitExceeded);
+
+            quota.Used += amount;
+            SaveToFile();
+            return Task.FromResult(QuotaConsumeResult.Consumed);
+        }
+    }
+
+    public Task<bool> TryConsumeRateLimitAsync(string key, float rateLimitHz, float maxTokens, DateTime now)
+    {
+        lock (_syncRoot)
+        {
+            var request = _store.Requests
+                .Where(r => r.Key == key)
+                .OrderByDescending(r => r.LastUsed)
+                .FirstOrDefault();
+            var exists = request != null;
+
+            if (!RateLimitTokenBucket.TryConsume(
+                    exists,
+                    request?.LastUsed ?? now,
+                    request?.LastRate ?? 0f,
+                    now,
+                    rateLimitHz,
+                    maxTokens,
+                    out var remaining))
+            {
+                return Task.FromResult(false);
+            }
+
+            if (request != null)
+            {
+                request.LastUsed = now;
+                request.LastRate = remaining;
+            }
+            else
+            {
+                _store.Requests.Add(new Request { Key = key, LastUsed = now, LastRate = remaining });
+            }
+
+            SaveToFile();
+            return Task.FromResult(true);
+        }
     }
 
     private void SaveToFile()

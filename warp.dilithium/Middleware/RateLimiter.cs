@@ -52,40 +52,17 @@ public sealed class RateLimiter : MiddlewareBase<RateLimiterOptions>
         float rateLimitHz = dynamicRateLimit ?? Options.RateLimitHz;
         float maxTokens = rateLimitHz; // Allow burst up to rate limit
 
-        var now = DateTime.UtcNow;
-        var request = DataContext.Requests.OrderByDescending(r => r.LastUsed).FirstOrDefault(r => r.Key == key);
-        float tokens = maxTokens;
-        DateTime lastUsed = now;
-        if (request != null)
-        {
-            lastUsed = request.LastUsed;
-            // Calculate how many tokens to refill since last request
-            var elapsed = (now - lastUsed).TotalSeconds;
-            tokens = Math.Min(maxTokens, request.LastRate + (float)(elapsed * rateLimitHz));
-        }
-        if (tokens < 1)
+        // Atomically evaluate and update the token bucket. This closes the read-modify-write race in
+        // the previous implementation, where concurrent requests read the same LastRate and each
+        // wrote back their own decrement, losing updates and letting callers exceed the rate limit.
+        var allowed = await DataContext.TryConsumeRateLimitAsync(key, rateLimitHz, maxTokens, DateTime.UtcNow);
+        if (!allowed)
         {
             return Results
                 .Problem("Rate limit exceeded", statusCode: 429)
                 .Stop(); // Stop the pipeline on rate limit exceeded
         }
-        else
-        {
-            if (request != null)
-            {
-                request.LastUsed = now;
-                request.LastRate = tokens - 1; // Consume one token
-                await DataContext.SaveAsync(request);
-            }
-            else
-            {
-                var newRequest = DataContext.CreateRequest();
-                newRequest.Key = key;
-                newRequest.LastUsed = now;
-                newRequest.LastRate = maxTokens - 1;
-                await DataContext.SaveAsync(newRequest);
-            }
-        }
+
         return Results
             .Ok()
             .Continue(); // This middleware allows the request to continue
