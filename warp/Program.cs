@@ -24,29 +24,6 @@ builder.Services
     .AddReverseProxy()
     .LoadFromConfig(config.GetSection("ReverseProxy"));
 
-// Register PostTransformMiddlewareRunner for YARP post-transform (predispatch) extensibility
-// We use a factory approach since we need the middleware cache which is built later
-builder.Services.AddSingleton<Yarp.ReverseProxy.Forwarder.IPostTransformMiddleware>(serviceProvider =>
-{
-    var logger = serviceProvider.GetRequiredService<ILoggerFactory>().CreateLogger<PostTransformMiddlewareRunner>();
-    
-    // Create middleware cache on-demand
-    var middlewareCache = new Dictionary<string, List<Func<HttpContext, Func<Task>, Task<bool>>>>();
-    foreach (var route in routesSection.GetChildren())
-    {
-        var routeId = route.Key;
-        var predispatchSection = route.GetSection("Metadata:Predispatch");
-        if (predispatchSection.Exists())
-        {
-            middlewareCache[$"{routeId}_predispatch"] = 
-                Warp.Core.Extensions.MiddlewarePipelineExtensions.CreateMiddlewareFromConfig(
-                    predispatchSection, serviceProvider, $"{routeId}_predispatch");
-        }
-    }
-    
-    return new PostTransformMiddlewareRunner(middlewareCache, logger);
-});
-
 // Always configure OpenTelemetry for unified tracing
 var tempLogger = LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger("Startup");
 tempLogger.LogInformation("Configuring OpenTelemetry for unified tracing...");
@@ -189,7 +166,79 @@ app.MapReverseProxy(proxyPipeline =>
         await next(context);
     });
 
-    // PREDISPATCH: handled by PostTransformMiddlewareRunner (registered as IPostTransformMiddleware)
+    // PREDISPATCH: runs after YARP's config-based transforms but before dispatch to the
+    // backend. We apply the route's transform engine to a throwaway request message so we
+    // can read the transformed path (exposed via context.Items["RequestPath"]) without
+    // dispatching, then run the predispatch middleware. If a predispatch middleware
+    // short-circuits (returns false), we skip dispatch so it can return its own response.
+    // This replaces the previous IPostTransformMiddleware hook that required a custom YARP fork.
+    proxyPipeline.Use(async (context, next) =>
+    {
+        var proxyFeature = context.Features.Get<Yarp.ReverseProxy.Model.IReverseProxyFeature>();
+        var routeId = proxyFeature?.Route?.Config?.RouteId;
+
+        // Default RequestPath to the current (untransformed) path for downstream consumers.
+        context.Items["RequestPath"] = context.Request.Path.Value ?? string.Empty;
+
+        if (string.IsNullOrEmpty(routeId) ||
+            !middlewareCache.TryGetValue($"{routeId}_predispatch", out var predispatchMiddleware))
+        {
+            await next(context);
+            return;
+        }
+
+        // Apply the route's YARP transforms to a throwaway HttpRequestMessage to obtain the
+        // transformed path without forwarding. Transforms only mutate the outgoing request
+        // (not the HttpContext), so running them here and again during the real dispatch is
+        // idempotent for the config-based path/header transforms Warp uses.
+        var transformer = proxyFeature?.Route?.Transformer;
+        if (transformer != null)
+        {
+            // Use the cluster's destination address as the prefix so we can strip the backend
+            // base path afterwards, matching the outgoing request URI YARP will build.
+            var destinationAddress = proxyFeature?.Cluster?.Config?.Destinations?.Values
+                .FirstOrDefault()?.Address;
+            if (string.IsNullOrEmpty(destinationAddress))
+                destinationAddress = "http://placeholder";
+
+            using var throwaway = new HttpRequestMessage();
+            await transformer.TransformRequestAsync(context, throwaway, destinationAddress, context.RequestAborted);
+
+            if (throwaway.RequestUri != null)
+            {
+                var destUri = new Uri(destinationAddress);
+                var hostPath = destUri.AbsolutePath.TrimEnd('/');
+                var transformedPath = throwaway.RequestUri.IsAbsoluteUri
+                    ? throwaway.RequestUri.AbsolutePath
+                    : throwaway.RequestUri.OriginalString;
+
+                var normalizedPath = !string.IsNullOrEmpty(hostPath) &&
+                    transformedPath.StartsWith(hostPath, StringComparison.OrdinalIgnoreCase)
+                        ? transformedPath.Substring(hostPath.Length)
+                        : transformedPath;
+
+                if (string.IsNullOrEmpty(normalizedPath))
+                    normalizedPath = "/";
+
+                context.Items["RequestPath"] = normalizedPath;
+            }
+        }
+
+        // Run the cached predispatch middleware. Each returns whether the pipeline should
+        // continue; if one short-circuits (returns false) it has handled the response, so we
+        // skip dispatch to the backend entirely.
+        foreach (var middlewareFunction in predispatchMiddleware)
+        {
+            var shouldContinue = await middlewareFunction(context, () => Task.CompletedTask);
+            if (!shouldContinue)
+            {
+                // Middleware has handled the response, prevent dispatch
+                return;
+            }
+        }
+
+        await next(context);
+    });
 
     // POSTDISPATCH: runs after dispatch, before postprocess
     proxyPipeline.Use(async (context, next) =>
