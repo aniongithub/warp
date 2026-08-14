@@ -86,19 +86,46 @@ public static class MiddlewarePipelineExtensions
                 var middleware = ActivatorUtilities.CreateInstance(serviceProvider, type, middlewareName, middlewareLogger, dataContext, configInstance)
                     ?? throw new Exception($"Could not create middleware {middlewareName}");
                 
-                // Create middleware function that returns whether pipeline should continue
-                middlewareFunctions.Add(async (context, next) =>
+                // Cast to the strongly-typed interface once at build time so the per-request
+                // delegate can invoke InvokeWithTracingAsync directly, with no reflection on the
+                // hot path. All Warp middleware derive from MiddlewareBase<> which implements
+                // IWarpMiddleware, so this cast is expected to succeed.
+                if (middleware is IWarpMiddleware warpMiddleware)
                 {
-                    var method = type.GetMethod("InvokeWithTracingAsync");
-                    var task = method?.Invoke(middleware, new object[] { context, new RequestDelegate(_ => next()) }) as Task<IResult>;
-                    if (task == null)
-                        throw new InvalidOperationException($"{middlewareName} did not return a valid Task<IResult>");
+                    middlewareFunctions.Add(async (context, next) =>
+                    {
+                        var result = await warpMiddleware.InvokeWithTracingAsync(
+                            context, new RequestDelegate(_ => next()));
+                        
+                        // Return whether pipeline should continue
+                        return result is Result warpResult && warpResult.Action == PipelineAction.Continue;
+                    });
+                }
+                else
+                {
+                    // Safe fallback for a type that does not implement IWarpMiddleware. This is
+                    // logged once here at startup; the MethodInfo is resolved once (not per
+                    // request) and reused by the closure.
+                    logger.LogWarning(
+                        "Middleware {Name} ({Type}) does not implement IWarpMiddleware; falling back to reflective invocation.",
+                        middlewareName, middlewareType);
                     
-                    var result = await task;
+                    var method = type.GetMethod("InvokeWithTracingAsync")
+                        ?? throw new InvalidOperationException(
+                            $"{middlewareName} does not expose an InvokeWithTracingAsync method");
                     
-                    // Return whether pipeline should continue
-                    return result is Result warpResult && warpResult.Action == PipelineAction.Continue;
-                });
+                    middlewareFunctions.Add(async (context, next) =>
+                    {
+                        var task = method.Invoke(middleware, new object[] { context, new RequestDelegate(_ => next()) }) as Task<IResult>;
+                        if (task == null)
+                            throw new InvalidOperationException($"{middlewareName} did not return a valid Task<IResult>");
+                        
+                        var result = await task;
+                        
+                        // Return whether pipeline should continue
+                        return result is Result warpResult && warpResult.Action == PipelineAction.Continue;
+                    });
+                }
                 
                 logger.LogInformation("Successfully created middleware: {Name}", middlewareName);
             }
