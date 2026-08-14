@@ -167,11 +167,6 @@ using (var tempProvider = builder.Services.BuildServiceProvider())
             .AddOtlpExporter(otlp => otlp.Endpoint = new Uri(otelEndpoint)) // For Jaeger/external tools
             .AddHttpClientInstrumentation();
     });
-        
-    // Register PostTransformMiddlewareRunner for YARP post-transform (predispatch) extensibility
-    builder.Services.AddSingleton<Yarp.ReverseProxy.Forwarder.IPostTransformMiddleware>(
-        sp => new PostTransformMiddlewareRunner(componentMap, routePhaseOverrides, sp.GetRequiredService<ILoggerFactory>().CreateLogger<PostTransformMiddlewareRunner>())
-    );
 }
 #pragma warning restore ASP0000 // Do not call 'IServiceCollection.BuildServiceProvider' in 'ConfigureServices'
 
@@ -257,8 +252,79 @@ app.MapReverseProxy(proxyPipeline =>
         await next(context);
     });
 
-    // PREDISPATCH: handled by IPostTransformMiddleware (PostTransformMiddlewareRunner)
-    // No manual block here; handled by YARP extensibility
+    // PREDISPATCH: runs after YARP's config-based transforms but before dispatch to the
+    // backend. We apply the route's transform engine to a throwaway request message so we
+    // can read the transformed path (exposed via context.Items["RequestPath"]) without
+    // dispatching, then run the predispatch middleware. Because the terminal delegate below
+    // is YARP's own `next` (the forwarder), a middleware that short-circuits (does not call
+    // next) prevents dispatch and returns its own response to the client. This replaces the
+    // previous IPostTransformMiddleware hook that required a custom YARP fork.
+    proxyPipeline.Use(async (context, next) =>
+    {
+        var proxyFeature = context.Features.Get<Yarp.ReverseProxy.Model.IReverseProxyFeature>();
+        var metadata = proxyFeature?.Route?.Config?.Metadata;
+        var routeId = proxyFeature?.Route?.Config?.RouteId;
+        var predispatch = GetMiddlewareNames(metadata, "Predispatch", routePhaseOverrides, routeId);
+
+        // Default RequestPath to the current (untransformed) path for downstream consumers.
+        context.Items["RequestPath"] = context.Request.Path.Value ?? string.Empty;
+
+        if (predispatch.Length == 0)
+        {
+            await next();
+            return;
+        }
+
+        // Apply the route's YARP transforms to a throwaway HttpRequestMessage to obtain the
+        // transformed path without forwarding. Transforms only mutate the outgoing request
+        // (not the HttpContext), so running them here and again during the real dispatch is
+        // idempotent for the config-based path/header transforms Warp uses.
+        var transformer = proxyFeature?.Route?.Transformer;
+        if (transformer != null)
+        {
+            // Use the cluster's destination address as the prefix so we can strip the backend
+            // base path afterwards, matching the outgoing request URI YARP will build.
+            var destinationAddress = proxyFeature?.Cluster?.Config?.Destinations?.Values
+                .FirstOrDefault()?.Address;
+            if (string.IsNullOrEmpty(destinationAddress))
+                destinationAddress = "http://placeholder";
+
+            using var throwaway = new HttpRequestMessage();
+            await transformer.TransformRequestAsync(context, throwaway, destinationAddress, context.RequestAborted);
+
+            if (throwaway.RequestUri != null)
+            {
+                var destUri = new Uri(destinationAddress);
+                var hostPath = destUri.AbsolutePath.TrimEnd('/');
+                var transformedPath = throwaway.RequestUri.IsAbsoluteUri
+                    ? throwaway.RequestUri.AbsolutePath
+                    : throwaway.RequestUri.OriginalString;
+
+                var normalizedPath = !string.IsNullOrEmpty(hostPath) &&
+                    transformedPath.StartsWith(hostPath, StringComparison.OrdinalIgnoreCase)
+                        ? transformedPath.Substring(hostPath.Length)
+                        : transformedPath;
+
+                if (string.IsNullOrEmpty(normalizedPath))
+                    normalizedPath = "/";
+
+                context.Items["RequestPath"] = normalizedPath;
+            }
+        }
+
+        // Compose and run the predispatch middleware pipeline, terminating in YARP's dispatch.
+        RequestDelegate terminal = _ => next();
+        var pipeline = terminal;
+        foreach (var name in predispatch.Reverse())
+        {
+            if (componentMap.TryGetValue(name, out var middleware))
+            {
+                var nextDelegate = pipeline;
+                pipeline = middleware(nextDelegate);
+            }
+        }
+        await pipeline(context);
+    });
 
     // POSTDISPATCH: runs after dispatch, before postprocess
     proxyPipeline.Use(async (context, next) =>
