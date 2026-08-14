@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Warp.Dilithium.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- JwtValidator operates on HttpContext / IResult from the ASP.NET Core shared framework. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\warp.dilithium\warp.dilithium.csproj" />
+  </ItemGroup>
+
+</Project>
