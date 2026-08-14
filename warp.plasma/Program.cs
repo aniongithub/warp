@@ -229,7 +229,12 @@ internal sealed class EPS
     {
         var jobConfigs = new List<JobConfiguration>();
         var jobsSection = _configuration.GetSection("Jobs");
-        
+
+        // Solution-wide processor defaults (existing YAML pattern) used as a fallback for retry knobs.
+        var processorSection = _configuration.GetSection("Processor");
+        var defaultMaxAttempts = processorSection.GetValue<int?>("MaxRetryAttempts") ?? 3;
+        var defaultBackoffBaseSeconds = (processorSection.GetValue<int?>("RetryDelayMs") ?? 5000) / 1000.0;
+
         foreach (var jobSection in jobsSection.GetChildren())
         {
             var config = new JobConfiguration
@@ -239,7 +244,7 @@ internal sealed class EPS
                 MaxConcurrentJobs = int.Parse(jobSection["MaxConcurrentJobs"] ?? "1"),
                 PollingIntervalMs = int.Parse(jobSection["PollingIntervalMs"] ?? "5000")
             };
-            
+
             // Load context and delivery types directly
             var contextSection = jobSection.GetSection("Context");
             config.ContextType = contextSection["Type"] ?? "";
@@ -249,7 +254,14 @@ internal sealed class EPS
             {
                 config.DeliveryType = deliverySection["Type"] ?? "";
             }
-            
+
+            // Per-job retry policy overrides the processor defaults where present.
+            var retrySection = jobSection.GetSection("RetryPolicy");
+            config.MaxAttempts = retrySection.GetValue<int?>("MaxAttempts") ?? defaultMaxAttempts;
+            config.RetryBackoffBaseSeconds = retrySection.GetValue<double?>("BackoffBaseSeconds") ?? defaultBackoffBaseSeconds;
+            config.RetryBackoffMaxSeconds = retrySection.GetValue<double?>("BackoffMaxSeconds") ?? 300;
+            if (config.MaxAttempts < 1) config.MaxAttempts = 1;
+
             jobConfigs.Add(config);
         }
         
@@ -262,7 +274,23 @@ internal sealed class EPS
         
         // Create job context instance
         var jobContext = CreateJobContext(jobConfig.ContextType, jobConfig.Name);
-        
+
+        // Recover any jobs that a previous worker left in-flight (crash mid-dispatch). These are
+        // requeued (under the attempt cap) or dead-lettered so at-least-once delivery is preserved.
+        try
+        {
+            var recovered = await jobContext.RecoverProcessingJobsAsync<Job>(jobConfig.MaxAttempts);
+            if (recovered > 0)
+            {
+                _logger.LogWarning("Recovered {Count} in-flight job(s) from the processing list for {JobName}",
+                    recovered, jobConfig.Name);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to recover in-flight jobs for {JobName}", jobConfig.Name);
+        }
+
         // Create concurrency limiter for this job type
         using var concurrencyLimiter = new SemaphoreSlim(jobConfig.MaxConcurrentJobs, jobConfig.MaxConcurrentJobs);
         
@@ -500,10 +528,10 @@ internal sealed class EPS
         _logger.LogDebug("Parameters after reverse transform: {Parameters}", JsonSerializer.Serialize(originalParameters));
         
         // Execute the HTTP call and populate HttpContext.Response
-        await ExecuteJobHttpCallWithResponse(job, jobContext, syncUrl, originalParameters, httpContext);
+        await ExecuteJobHttpCallWithResponse(job, jobContext, jobConfig, syncUrl, originalParameters, httpContext);
     }
 
-    private async Task ExecuteJobHttpCallWithResponse(Job job, IJobContext jobContext, string syncUrl, Dictionary<string, object?> originalParameters, HttpContext httpContext)
+    private async Task ExecuteJobHttpCallWithResponse(Job job, IJobContext jobContext, JobConfiguration jobConfig, string syncUrl, Dictionary<string, object?> originalParameters, HttpContext httpContext)
     {
         using var activity = _activitySource.StartActivity("Job.Execute.HttpCall");
         activity?.SetTag("job.id", job.Id);
@@ -684,8 +712,10 @@ internal sealed class EPS
                 else
                 {
                     var errorMessage = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {responseContent}";
-                    await jobContext.UpdateJobAsync(job, JobStatus.Failed, error: errorMessage);
-                    _logger.LogWarning("Job {JobId} marked as failed: {Error}", job.Id, errorMessage);
+                    // 5xx/408/429 are transient and worth retrying; other 4xx are client errors that
+                    // will not succeed on retry, so they are dead-lettered immediately.
+                    var retryable = IsRetryableStatusCode((int)response.StatusCode);
+                    await HandleDispatchFailureAsync(job, jobContext, jobConfig, errorMessage, retryable);
                 }
             }
         }
@@ -693,8 +723,9 @@ internal sealed class EPS
         {
             var timeoutError = "Request timeout";
             activity?.SetStatus(ActivityStatusCode.Error, timeoutError);
-            await jobContext.UpdateJobAsync(job, JobStatus.Failed, error: timeoutError);
-            _logger.LogWarning("Job {JobId} timed out and marked as failed", job.Id);
+            // Timeouts are transient - retry within the attempt cap.
+            await HandleDispatchFailureAsync(job, jobContext, jobConfig, timeoutError, retryable: true);
+            _logger.LogWarning("Job {JobId} timed out", job.Id);
         }
         catch (Exception ex)
         {
@@ -702,8 +733,63 @@ internal sealed class EPS
             activity?.SetStatus(ActivityStatusCode.Error, errorMessage);
             activity?.SetTag("exception.type", ex.GetType().Name);
             activity?.SetTag("exception.message", ex.Message);
-            await jobContext.UpdateJobAsync(job, JobStatus.Failed, error: errorMessage);
+            // Network/transport exceptions are treated as transient - retry within the attempt cap.
+            await HandleDispatchFailureAsync(job, jobContext, jobConfig, errorMessage, retryable: true);
             _logger.LogError(ex, "Job {JobId} failed with exception", job.Id);
+        }
+    }
+
+    private static bool IsRetryableStatusCode(int statusCode)
+    {
+        // Retry on server errors and the two transient 4xx codes; treat all other 4xx as permanent.
+        return statusCode >= 500 || statusCode == 408 || statusCode == 429;
+    }
+
+    private static TimeSpan ComputeBackoff(JobConfiguration jobConfig, int attempt)
+    {
+        var seconds = jobConfig.RetryBackoffBaseSeconds * Math.Pow(2, Math.Max(0, attempt - 1));
+        if (seconds > jobConfig.RetryBackoffMaxSeconds) seconds = jobConfig.RetryBackoffMaxSeconds;
+        if (seconds < 0) seconds = 0;
+        return TimeSpan.FromSeconds(seconds);
+    }
+
+    /// <summary>
+    /// Applies the bounded at-least-once retry policy to a failed dispatch. Transient failures under
+    /// the attempt cap are requeued (after exponential backoff); otherwise the job is dead-lettered
+    /// into a terminal Failed state. The attempt counter is tracked on the job itself.
+    /// </summary>
+    private async Task HandleDispatchFailureAsync(Job job, IJobContext jobContext, JobConfiguration jobConfig, string errorMessage, bool retryable)
+    {
+        job.Attempts += 1;
+
+        if (retryable && job.Attempts < jobConfig.MaxAttempts)
+        {
+            var delay = ComputeBackoff(jobConfig, job.Attempts);
+            _logger.LogWarning("Job {JobId} dispatch failed (attempt {Attempt}/{Max}); requeuing in {DelaySeconds}s: {Error}",
+                job.Id, job.Attempts, jobConfig.MaxAttempts, delay.TotalSeconds, errorMessage);
+
+            try
+            {
+                await Task.Delay(delay, _cancellationTokenSource.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Shutting down mid-backoff: leave the job in-flight on the processing list so it is
+                // recovered (requeued) on the next startup rather than lost.
+                return;
+            }
+
+            await jobContext.RequeueJobAsync(job);
+            _logger.LogInformation("Job {JobId} requeued for retry (attempt {Attempt}/{Max})",
+                job.Id, job.Attempts, jobConfig.MaxAttempts);
+        }
+        else
+        {
+            var reason = retryable
+                ? $"Dead-lettered after {job.Attempts} attempt(s). Last error: {errorMessage}"
+                : $"Permanent failure (not retried): {errorMessage}";
+            await jobContext.UpdateJobAsync(job, JobStatus.Failed, error: reason);
+            _logger.LogWarning("Job {JobId} marked as Failed: {Reason}", job.Id, reason);
         }
     }
 

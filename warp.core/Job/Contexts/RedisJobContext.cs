@@ -35,6 +35,9 @@ public class RedisJobContext : JobContextBase
 
     private string JobKey(string id, JobStatus status, string userId) => $"channel:{_channel}:job:{id}@{status}:{userId}";
     private string QueueKey(JobStatus status) => $"channel:{_channel}:queue:{status}";
+    // Reliable-queue "processing" list: holds the full job keys currently being dispatched by a worker.
+    // An entry lingering here after a crash marks an in-flight job that must be recovered.
+    private string ProcessingKey() => $"channel:{_channel}:processing";
 
     public override IJob CreateJob() => new Job();
 
@@ -51,9 +54,11 @@ public class RedisJobContext : JobContextBase
         {
             Console.WriteLine($"Storing job in Redis with key: {key}");
             await _db!.StringSetAsync(key, SerializeJob(job));
-        
-            Console.WriteLine($"Pushing job ID to queue: {queueKey}");
-            await _db.ListRightPushAsync(queueKey, job.Id);
+
+            // The queue carries the FULL job key (not just the id) so consumers can fetch
+            // the job data with a direct O(1) GET instead of an O(N) wildcard KEYS scan.
+            Console.WriteLine($"Pushing job key to queue: {queueKey}");
+            await _db.ListRightPushAsync(queueKey, key);
         }
         catch (Exception ex)
         {
@@ -65,61 +70,76 @@ public class RedisJobContext : JobContextBase
     public override async Task<DequeueResult<T>> DequeueJobAsync<T>()
     {
         EnsureInitialized();
-        // Pop job ID from the QUEUED queue (FIFO)
-        var jobIdValue = await _db!.ListLeftPopAsync(QueueKey(JobStatus.Queued));
-        
-        if (!jobIdValue.HasValue || string.IsNullOrEmpty(jobIdValue))
+
+        var processingKey = ProcessingKey();
+
+        // Reliably claim the next queued job: atomically pop the head of the Queued list and
+        // push it onto the processing list (Redis LMOVE). If the worker crashes after this point
+        // the entry survives on the processing list and is recovered on the next startup, so an
+        // in-flight job is never silently lost (at-least-once).
+        var moved = await _db!.ListMoveAsync(QueueKey(JobStatus.Queued), processingKey, ListSide.Left, ListSide.Right);
+
+        if (moved.IsNullOrEmpty)
         {
             return DequeueResult<T>.NoJob(); // No job available - this is normal, not an exception
         }
-        
-        var jobId = jobIdValue.ToString();
-        
-        // Find the actual job data using the job ID
-        var server = _db.Multiplexer.GetServer(_db.Multiplexer.GetEndPoints().First());
-        var pattern = JobKey(jobId, JobStatus.Queued, "*"); // Use wildcard for user ID
-        var keys = server.Keys(pattern: pattern).ToList();
-        
-        if (keys.Count == 0)
+
+        // The queue now carries the FULL job key, so fetch the job data directly (no wildcard scan).
+        var queuedKey = moved.ToString();
+        var jobData = await _db.StringGetAsync(queuedKey);
+
+        if (jobData.IsNullOrEmpty)
         {
-            throw new InvalidOperationException($"Job data not found for job ID: {jobId}");
+            // Dangling queue entry with no backing data (e.g. already consumed elsewhere). Drop it.
+            await _db.ListRemoveAsync(processingKey, queuedKey);
+            return DequeueResult<T>.NoJob();
         }
-        
-        var jobKey = keys.First();
-        var jobData = await _db.StringGetAsync(jobKey);
-        
-        if (!jobData.HasValue || string.IsNullOrEmpty(jobData))
-        {
-            throw new InvalidOperationException($"Job data is empty for job ID: {jobId}");
-        }
-        
+
         // Deserialize the job data
         var jobDataString = jobData.ToString();
+        T job;
         try
         {
-            var job = DeserializeJob<T>(jobDataString)!;
-            // if (job == null) throw new InvalidOperationException("Failed to deserialize job.");
-            
-            // Move job to Running status
-            if (string.IsNullOrEmpty(job.User?.Id)) throw new ArgumentException("User.Id required");
-            
-            var fromKey = JobKey(job.Id, JobStatus.Queued, job.User.Id);
-            var toKey = JobKey(job.Id, JobStatus.Running, job.User.Id);
-            
-            job.Status = JobStatus.Running;
-            job.StartedAt = DateTime.UtcNow;
-            
-            await _db.StringSetAsync(toKey, SerializeJob(job));
-            await _db.ListRightPushAsync(QueueKey(JobStatus.Running), job.Id);
-            await _db.KeyDeleteAsync(fromKey);
-            
-            return DequeueResult<T>.Success(job);
-
+            job = DeserializeJob<T>(jobDataString)!;
         }
         catch (Exception ex)
         {
+            // Poison message: remove it from the processing list so it doesn't wedge the worker.
+            await _db.ListRemoveAsync(processingKey, queuedKey);
             throw new InvalidOperationException("Failed to deserialize job.", ex);
         }
+
+        if (string.IsNullOrEmpty(job.User?.Id))
+        {
+            await _db.ListRemoveAsync(processingKey, queuedKey);
+            throw new ArgumentException("User.Id required");
+        }
+
+        var userId = job.User.Id;
+        var runningKey = JobKey(job.Id, JobStatus.Running, userId);
+
+        job.Status = JobStatus.Running;
+        job.StartedAt = DateTime.UtcNow;
+
+        // Atomically move the job from Queued to Running and repoint the processing marker at the
+        // new Running key so the crash-recovery net keeps tracking the in-flight job.
+        var transaction = _db.CreateTransaction();
+        transaction.AddCondition(Condition.KeyExists(queuedKey));
+        _ = transaction.StringSetAsync(runningKey, SerializeJob(job));
+        _ = transaction.ListRightPushAsync(QueueKey(JobStatus.Running), runningKey);
+        _ = transaction.KeyDeleteAsync(queuedKey);
+        _ = transaction.ListRemoveAsync(processingKey, queuedKey);
+        _ = transaction.ListRightPushAsync(processingKey, runningKey);
+
+        var committed = await transaction.ExecuteAsync();
+        if (!committed)
+        {
+            // Another actor transitioned the job out of Queued first; clean up our marker and skip.
+            await _db.ListRemoveAsync(processingKey, queuedKey);
+            return DequeueResult<T>.NoJob();
+        }
+
+        return DequeueResult<T>.Success(job);
     }
 
     public override async Task<T> LookupJobAsync<T>(string id, JobStatus status, string userId)
@@ -213,13 +233,16 @@ public class RedisJobContext : JobContextBase
         if (!string.IsNullOrEmpty(output))
             job.Output = output;
         
-        // Move job to new status
+        // Move job to new status (queues carry the full job key, not the bare id)
         await _db!.StringSetAsync(newKey, SerializeJob(job));
-        await _db.ListRightPushAsync(QueueKey(newStatus), job.Id);
-        
+        await _db.ListRightPushAsync(QueueKey(newStatus), newKey);
+
         // Remove from old status
         await _db.KeyDeleteAsync(oldKey);
-        await _db.ListRemoveAsync(QueueKey(oldStatus), job.Id);
+        await _db.ListRemoveAsync(QueueKey(oldStatus), oldKey);
+
+        // Clear the in-flight processing marker (no-op unless the job was Running).
+        await _db.ListRemoveAsync(ProcessingKey(), oldKey);
     }
 
     public override async Task<bool> UpdateJobStatusAsync(string jobId, JobStatus fromStatus, JobStatus toStatus, string userId, string? error = null, string? output = null)
@@ -265,14 +288,110 @@ public class RedisJobContext : JobContextBase
         if (!string.IsNullOrEmpty(output))
             job.Output = output;
         
-        // Queue the operations
+        // Queue the operations (queues carry the full job key, not the bare id)
         _ = transaction.StringSetAsync(toKey, SerializeJob(job));
-        _ = transaction.ListRightPushAsync(QueueKey(toStatus), jobId);
+        _ = transaction.ListRightPushAsync(QueueKey(toStatus), toKey);
         _ = transaction.KeyDeleteAsync(fromKey);
-        _ = transaction.ListRemoveAsync(QueueKey(fromStatus), jobId);
+        _ = transaction.ListRemoveAsync(QueueKey(fromStatus), fromKey);
+        // Clear the in-flight processing marker (no-op unless the job was Running).
+        _ = transaction.ListRemoveAsync(ProcessingKey(), fromKey);
         
         // Execute atomically
         var success = await transaction.ExecuteAsync();
         return success;
+    }
+
+    public override async Task RequeueJobAsync<T>(T job)
+    {
+        EnsureInitialized();
+        if (string.IsNullOrEmpty(job.User?.Id)) throw new ArgumentException("User.Id required");
+
+        var userId = job.User.Id;
+        var fromKey = JobKey(job.Id, job.Status, userId);
+        var queuedKey = JobKey(job.Id, JobStatus.Queued, userId);
+
+        // Reset the job to Queued for another dispatch attempt. Attempts is expected to have been
+        // incremented by the caller before requeueing so the attempt cap is honored.
+        job.Status = JobStatus.Queued;
+        job.StartedAt = null;
+        job.EndedAt = null;
+
+        // Atomically move the job back onto the Queued list and drop the in-flight marker.
+        var transaction = _db!.CreateTransaction();
+        _ = transaction.StringSetAsync(queuedKey, SerializeJob(job));
+        _ = transaction.ListRightPushAsync(QueueKey(JobStatus.Queued), queuedKey);
+        if (fromKey != queuedKey)
+        {
+            _ = transaction.KeyDeleteAsync(fromKey);
+            _ = transaction.ListRemoveAsync(QueueKey(JobStatus.Running), fromKey);
+        }
+        _ = transaction.ListRemoveAsync(ProcessingKey(), fromKey);
+
+        await transaction.ExecuteAsync();
+    }
+
+    public override async Task<int> RecoverProcessingJobsAsync<T>(int maxAttempts)
+    {
+        EnsureInitialized();
+
+        var processingKey = ProcessingKey();
+        var entries = await _db!.ListRangeAsync(processingKey);
+        var recovered = 0;
+
+        foreach (var entry in entries)
+        {
+            if (entry.IsNullOrEmpty)
+            {
+                await _db.ListRemoveAsync(processingKey, entry);
+                continue;
+            }
+
+            var jobKey = entry.ToString();
+            var jobData = await _db.StringGetAsync(jobKey);
+
+            if (jobData.IsNullOrEmpty)
+            {
+                // No backing data; just drop the stale marker.
+                await _db.ListRemoveAsync(processingKey, entry);
+                continue;
+            }
+
+            T job;
+            try
+            {
+                job = DeserializeJob<T>(jobData.ToString())!;
+            }
+            catch
+            {
+                // Poison message: remove marker and delete the unusable key.
+                await _db.ListRemoveAsync(processingKey, entry);
+                await _db.KeyDeleteAsync(jobKey);
+                continue;
+            }
+
+            if (string.IsNullOrEmpty(job.User?.Id))
+            {
+                await _db.ListRemoveAsync(processingKey, entry);
+                continue;
+            }
+
+            // The job was in-flight when a worker crashed. Count the interrupted attempt and either
+            // requeue it (under the cap) or dead-letter it (Failed) so it can never be lost.
+            job.Attempts += 1;
+
+            if (job.Attempts < maxAttempts)
+            {
+                await RequeueJobAsync(job);
+            }
+            else
+            {
+                await UpdateJobAsync(job, JobStatus.Failed,
+                    error: $"Dead-lettered after {job.Attempts} attempt(s): worker crashed while dispatching (recovered from processing list).");
+            }
+
+            recovered++;
+        }
+
+        return recovered;
     }
 }

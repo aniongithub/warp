@@ -13,6 +13,10 @@ public class Job : IJob
     public string? Error { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+    // Number of dispatch attempts that have already been made for this job.
+    // Used to implement at-least-once processing with a bounded retry cap.
+    public int Attempts { get; set; } = 0;
+
     // Warp internal routing data
     public string OriginalPath { get; set; } = string.Empty;
     public string ClusterId { get; set; } = string.Empty;

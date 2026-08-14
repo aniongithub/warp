@@ -25,7 +25,15 @@ public interface IJobContext
     Task<IAsyncEnumerable<T>> ListJobs<T>(string userId, JobStatus status, int batchSize) where T : class, IJob;
     Task UpdateJobAsync<T>(T job, JobStatus newStatus, string? error = null, string? output = null) where T : class, IJob;
     Task<bool> UpdateJobStatusAsync(string jobId, JobStatus fromStatus, JobStatus toStatus, string userId, string? error = null, string? output = null);
-    
+
+    // Reliable-queue operations for at-least-once processing.
+    // Requeue an in-flight (Running) job back to the Queued state so it can be retried.
+    Task RequeueJobAsync<T>(T job) where T : class, IJob;
+    // Recover jobs that were left in the in-flight processing list by a crashed worker.
+    // Jobs under the attempt cap are requeued; those over it are dead-lettered (Failed).
+    // Returns the number of jobs recovered.
+    Task<int> RecoverProcessingJobsAsync<T>(int maxAttempts) where T : class, IJob;
+
     // Serialization methods for job persistence
     string SerializeJob<T>(T job) where T : class, IJob;
     T DeserializeJob<T>(string jobData) where T : class, IJob;
