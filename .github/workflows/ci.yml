@@ -55,6 +55,7 @@ jobs:
       - name: Test (unit + integration)
         run: >-
           dotnet test warp.sln -c Debug --no-build
+          --filter "Category!=E2E"
           --logger "trx"
           --results-directory ${{ github.workspace }}/test-results
 
@@ -64,4 +65,60 @@ jobs:
         with:
           name: test-results
           path: ${{ github.workspace }}/test-results/**/*.trx
+          if-no-files-found: error
+
+  e2e:
+    name: e2e (stripe/localstripe)
+    runs-on: ubuntu-latest
+    # Runs independently of build-and-test so the fast unit+integration job stays green on its own.
+    # This job stands up the FULL warp stack (gateway + plasma + latinum, redis, a stub upstream and
+    # localstripe) via Testcontainers and drives real end-to-end HTTP + signed-webhook scenarios.
+    env:
+      DOTNET_NOLOGO: "true"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+      # Ryuk is unnecessary on ephemeral runners and flaky under nested Docker; the VM is torn down
+      # after the job regardless.
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      # The GitHub-hosted runner has a working Docker daemon, so Testcontainers can build the warp
+      # image (from the repo Dockerfile output) and start the stack directly. The localstripe image is
+      # pinned by digest in the test fixture and pulled anonymously (no docker login required).
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'tests/Directory.Build.props', 'dotnet-tools.json') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Restore .NET tools
+        run: dotnet tool restore
+
+      - name: Restore
+        run: dotnet restore tests/Warp.E2E.Tests/Warp.E2E.Tests.csproj
+
+      - name: Build
+        run: dotnet build tests/Warp.E2E.Tests/Warp.E2E.Tests.csproj -c Debug --no-restore
+
+      - name: Test (e2e)
+        run: >-
+          dotnet test tests/Warp.E2E.Tests/Warp.E2E.Tests.csproj -c Debug --no-build
+          --logger "trx"
+          --results-directory ${{ github.workspace }}/e2e-results
+
+      - name: Upload e2e results (trx)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results
+          path: ${{ github.workspace }}/e2e-results/**/*.trx
           if-no-files-found: error

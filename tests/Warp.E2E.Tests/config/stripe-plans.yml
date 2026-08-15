@@ -1,0 +1,21 @@
+# Stripe subscription plans for the E2E suite. The subscription webhook names the created
+# quota after the PlanId (e.g. "basic"), so the tests assert a postpaid quota named "basic".
+- PlanId: "basic"
+  ProductName: "Warp Basic Plan (E2E)"
+  ProductDescription: "E2E basic plan"
+  Amount: 9.99
+  Currency: "usd"
+  Interval: "month"
+  IntervalCount: 1
+  QuotaName: "slips"
+  QuotaType: "postpaid"
+
+- PlanId: "pro"
+  ProductName: "Warp Pro Plan (E2E)"
+  ProductDescription: "E2E pro plan"
+  Amount: 29.99
+  Currency: "usd"
+  Interval: "month"
+  IntervalCount: 1
+  QuotaName: "slips"
+  QuotaType: "postpaid"

@@ -1,0 +1,7 @@
+# E2E data context: a shared Postgres instance so quota/user state written by the gateway,
+# plasma and latinum containers is all visible to the same store (and to the test's own
+# PostgreSqlDataContext used for assertions). Overridable via WARP_PG_CONN.
+DataContext:
+  Type: "Warp.Core.Data.Contexts.PostgreSqlDataContext, warp.core"
+  args:
+    connectionString: "${WARP_PG_CONN:Host=postgres;Port=5432;Database=warp;Username=warp;Password=warp_e2e}"

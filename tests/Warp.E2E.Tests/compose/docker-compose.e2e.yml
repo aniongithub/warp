@@ -1,0 +1,128 @@
+# Human/CI reference compose for the Warp E2E stack.
+#
+# The C# Testcontainers harness (E2EStack.cs) is the source of truth and builds this same topology
+# programmatically over the Docker socket. This file documents the stack and can be run standalone
+# AFTER publishing the warp entry assemblies into ./publish, e.g. from the repo root:
+#
+#   dotnet publish warp/warp.csproj                 -c Release -o tests/Warp.E2E.Tests/compose/publish
+#   dotnet publish warp.plasma/warp.plasma.csproj   -c Release -o tests/Warp.E2E.Tests/compose/publish
+#   dotnet publish warp.latinum/warp.latinum.csproj -c Release -o tests/Warp.E2E.Tests/compose/publish
+#   docker compose -f tests/Warp.E2E.Tests/compose/docker-compose.e2e.yml up --build
+#
+# (The build context here is this compose/ directory: Dockerfile layers ./publish + ../config.)
+
+name: warp-e2e
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: warp
+      POSTGRES_USER: warp
+      POSTGRES_PASSWORD: warp_e2e
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warp -d warp"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # Pinned, anonymously-pullable localstripe (multi-arch index digest; the runner selects the arch).
+  localstripe:
+    image: docker.io/aniondocker/localstripe:1.15.11@sha256:444c2c7724e4c1e33c1a3e969c5a47487776efa78d88e1b4518390c7a9620bd6
+    # localstripe listens on :8420
+
+  # Stub upstream: reflects method/path/headers/body as JSON (used to assert proxy + header injection).
+  echo:
+    image: mendhak/http-https-echo:31
+    environment:
+      HTTP_PORT: "8080"
+
+  warp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["dotnet", "warp.dll"]
+    environment:
+      ASPNETCORE_URLS: http://0.0.0.0:5000
+      ASPNETCORE_ENVIRONMENT: Production
+      WARP_CONFIG_BASE_DIR: /warp/config
+      WARP_PG_CONN: Host=postgres;Port=5432;Database=warp;Username=warp;Password=warp_e2e
+      REDIS_CONNECTION_STRING: redis:6379,defaultDatabase=0
+      STRIPE_API_BASE: http://localstripe:8420
+      STRIPE_SECRET_KEY: sk_test_e2e
+      STRIPE_PUBLISHABLE_KEY: pk_test_e2e
+      STRIPE_WEBHOOK_SECRET: whsec_e2e_0123456789abcdef0123456789abcdef
+      ECHO_ADDR: http://echo:8080
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  # Second gateway with the trust marker enabled (scenario 5). Kept separate because the injector
+  # strips X-JWT-Email before PermissionsChecker runs, which is incompatible with the dev-header
+  # identity model the other routes rely on.
+  warp-trust:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["dotnet", "warp.dll"]
+    environment:
+      ASPNETCORE_URLS: http://0.0.0.0:5000
+      ASPNETCORE_ENVIRONMENT: Production
+      WARP_CONFIG_BASE_DIR: /warp/config
+      WARP_PG_CONN: Host=postgres;Port=5432;Database=warp;Username=warp;Password=warp_e2e
+      REDIS_CONNECTION_STRING: redis:6379,defaultDatabase=0
+      STRIPE_API_BASE: http://localstripe:8420
+      STRIPE_WEBHOOK_SECRET: whsec_e2e_0123456789abcdef0123456789abcdef
+      ECHO_ADDR: http://echo:8080
+      GATEWAY_SHARED_SECRET: e2e-gateway-secret-abc123
+    ports:
+      - "5002:5000"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  warp-plasma:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["dotnet", "warp.plasma.dll"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      WARP_CONFIG_BASE_DIR: /warp/config
+      WARP_PG_CONN: Host=postgres;Port=5432;Database=warp;Username=warp;Password=warp_e2e
+      REDIS_CONNECTION_STRING: redis:6379,defaultDatabase=0
+      ECHO_ADDR: http://echo:8080
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  warp-latinum:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["dotnet", "warp.latinum.dll"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      WARP_CONFIG_BASE_DIR: /warp/config
+      WARP_PG_CONN: Host=postgres;Port=5432;Database=warp;Username=warp;Password=warp_e2e
+      REDIS_CONNECTION_STRING: redis:6379,defaultDatabase=0
+      STRIPE_API_BASE: http://localstripe:8420
+      STRIPE_SECRET_KEY: sk_test_e2e
+      STRIPE_PUBLISHABLE_KEY: pk_test_e2e
+      STRIPE_WEBHOOK_SECRET: whsec_e2e_0123456789abcdef0123456789abcdef
+    ports:
+      - "5004:5004"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      localstripe: { condition: service_started }

@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Warp.E2E.Tests</RootNamespace>
+    <!-- The harness shells out to `dotnet publish` for the gateway/plasma/latinum
+         entry assemblies; nothing here is meant to be published itself. -->
+    <IsPublishable>false</IsPublishable>
+  </PropertyGroup>
+
+  <!--
+    Full-stack end-to-end tests. A programmatic Testcontainers harness builds a runtime
+    image from the freshly published warp binaries + a dedicated e2e config, then brings up
+    postgres, redis, localstripe (pinned digest), a stub upstream and the warp gateway /
+    plasma / latinum processes on one network. Quota state is asserted directly against the
+    shared Postgres data context. Stripe webhooks are HMAC-signed in-test (mirroring
+    Warp.Latinum.Tests) and delivered straight to latinum for determinism.
+
+    warp.core is referenced for PostgreSqlDataContext (state assertions) and so building this
+    project also builds the gateway graph. The three entry assemblies are published by the
+    fixture rather than project-referenced to keep this a pure test assembly.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\warp.core\warp.core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Testcontainers" Version="4.0.0" />
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.0.0" />
+  </ItemGroup>
+
+  <!-- Ship the e2e config and compose assets next to the test binaries for humans/CI. -->
+  <ItemGroup>
+    <None Include="config\**\*" CopyToOutputDirectory="PreserveNewest" LinkBase="config" />
+  </ItemGroup>
+
+</Project>

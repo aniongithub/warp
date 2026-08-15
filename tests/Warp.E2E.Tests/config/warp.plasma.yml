@@ -1,0 +1,29 @@
+# Warp Plasma (async job processor) configuration for the E2E suite.
+#
+# A single "echo" job consumes the echo_async channel, dispatches the job to the stub upstream
+# and marks it completed. The retry policy lets the at-least-once path be exercised.
+
+$include:
+  - datacontext.yml
+
+Jobs:
+  echo:
+    MaxConcurrentJobs: 5
+    PollingIntervalMs: 500
+    Endpoint: "${ECHO_ADDR:http://echo:8080}"
+    RetryPolicy:
+      MaxAttempts: 3
+      BackoffBaseSeconds: 1
+      BackoffMaxSeconds: 10
+    Context:
+      Type: "Warp.Core.Job.Contexts.RedisJobContext, warp.core"
+      Options:
+        ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379,defaultDatabase=0}"
+        Channel: "echo_async"
+
+Processor:
+  EnableHealthCheck: true
+  HealthCheckIntervalMs: 30000
+  RetryFailedJobs: true
+  MaxRetryAttempts: 3
+  RetryDelayMs: 2000
