@@ -122,3 +122,29 @@ jobs:
           name: e2e-results
           path: ${{ github.workspace }}/e2e-results/**/*.trx
           if-no-files-found: error
+
+  image:
+    name: image build (runtime)
+    runs-on: ubuntu-latest
+    # Builds the root Dockerfile's `runtime` target exactly as the Release workflow does,
+    # but WITHOUT pushing. Neither build-and-test nor e2e exercises this Dockerfile (e2e
+    # builds a separate compose/Dockerfile), so this job is what guards the published image
+    # against COPY/context breakage on every PR — catching failures here instead of at
+    # release time. Single-arch (amd64) keeps it fast; the release does the multi-arch push.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build runtime image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

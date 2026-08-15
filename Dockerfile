@@ -78,6 +78,13 @@ RUN dotnet build /property:GenerateFullPaths=true /consoleloggerparameters:NoSum
 # Publish the project
 RUN dotnet publish -c Release -o /workspace/warp/publish /property:Generate
 
+# Guarantee the runtime-provisioned directories exist so the runtime stage can COPY
+# them even from a clean git checkout (git does not track empty dirs, and `spec/` is
+# gitignored). `config/` is intentionally empty — configuration is supplied at deploy
+# time via a mounted volume / ConfigMap (the gateway reads WARP_CONFIG_BASE_DIR, default
+# ./config). `spec/` holds the OpenAPI specs generated during the build above.
+RUN mkdir -p /workspace/warp/config /workspace/warp/spec
+
 # Final runtime image for the Warp API Gateway
 # This stage runs the published application using the ASP.NET Core runtime
 FROM mcr.microsoft.com/dotnet/aspnet:9.0-bookworm-slim AS runtime
@@ -99,13 +106,12 @@ WORKDIR /warp
 # Copy the published outputs from the builder stage.
 # Binaries, configuration, and OpenAPI specs
 COPY --from=builder /workspace/warp/publish .
-# Copy the warp-internal generated OpenAPI specs from the builder stage
-COPY --from=builder /workspace/warp/warp.apis.*.yml .
 
 # Copy our example configuration - this can be overridden by mounting a volume
 COPY --from=builder /workspace/warp/config ./config
 
-# Copy the external OpenAPI specs to the spec directory - this can be overridden by mounting a volume
+# Copy the OpenAPI specs (both the warp-internal generated specs and any external
+# specs) to the spec directory - this can be overridden by mounting a volume
 COPY --from=builder /workspace/warp/spec ./spec
 
 # Copy supervisord configuration and entrypoint script
