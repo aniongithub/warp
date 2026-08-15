@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\warp.core\warp.core.csproj" />
+    <ProjectReference Include="..\..\warp.dilithium\warp.dilithium.csproj" />
   </ItemGroup>
 
   <!--
