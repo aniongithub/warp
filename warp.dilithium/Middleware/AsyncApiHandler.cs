@@ -300,13 +300,9 @@ public abstract class AsyncApiHandler<TOptions, TJobContext> : MiddlewareBase<TO
 
     protected virtual async Task<JobResult> GetJobResultAsync(string jobId, string userId)
     {
-        Job? job = null;
-        foreach (JobStatus status in Enum.GetValues(typeof(JobStatus)))
-        {
-            job = await JobContext.LookupJobAsync<Job>(jobId, status, userId);
-            if (job != null) break;
-        }
+        var currentStatus = await JobContext.GetJobStatusAsync(jobId, userId);
 
+        var job = await JobContext.LookupJobAsync<Job>(jobId, currentStatus, userId);
         if (job == null)
         {
             throw new KeyNotFoundException($"Job '{jobId}' not found");
