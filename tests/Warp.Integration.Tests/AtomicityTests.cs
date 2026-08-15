@@ -9,11 +9,12 @@ namespace Warp.Integration.Tests;
 /// PostgreSql and Firestore. Adding a backend = implement <see cref="IDataContextBackend"/> and
 /// add a one-line derived class at the bottom of this file.
 ///
-/// TODO(#32): when Grant/Settle land on IDataContext, add:
-///   - Grant: N parallel GrantQuotaAsync; assert final Limit == sum, no lost updates.
-///   - Settle: interleave reserve (TryConsumeQuotaAsync) + SettleQuotaAsync(delta); assert Used
-///     reconciles exactly and never goes negative.
-/// These are deliberately omitted here because PR #32 is not yet merged.
+/// Grant/Settle (PR #32) are now on <see cref="IDataContext"/>, so this suite also asserts:
+///   - Grant (money-in): N parallel <see cref="IDataContext.GrantQuotaAsync"/>; final Limit ==
+///     starting + sum, with no lost updates.
+///   - Settle (reconcile): interleave reserve (<see cref="IDataContext.TryConsumeQuotaAsync"/>) +
+///     <see cref="IDataContext.SettleQuotaAsync"/>(delta); Used reconciles to the exact expected
+///     value and never goes negative.
 /// </summary>
 public abstract class AtomicityTestsBase<TBackend> : IClassFixture<TBackend>
     where TBackend : class, IDataContextBackend
@@ -60,6 +61,94 @@ public abstract class AtomicityTestsBase<TBackend> : IClassFixture<TBackend>
         var finalUsed = ctx.Quotas.First(q => q.Id == id).Used;
         finalUsed.Should().Be(limit, $"[{_backend.Name}] final Used must equal Limit exactly");
         finalUsed.Should().BeLessThanOrEqualTo(limit, $"[{_backend.Name}] a prepaid quota must never overrun its Limit");
+    }
+
+    /// <summary>
+    /// N parallel grants (money-in). Each <see cref="IDataContext.GrantQuotaAsync"/> adds a fixed
+    /// amount to <c>Limit</c>. Asserts the final Limit equals the starting Limit plus the sum of all
+    /// grants — i.e. no concurrent read-modify-write loses an update on the credit-granting path.
+    /// </summary>
+    [Fact]
+    public async Task Grant_is_exact_under_parallelism()
+    {
+        var ctx = _backend.Context;
+        var n = _backend.Parallelism;
+        const float startingLimit = 100f;
+        const float grant = 3f;
+
+        var id = $"quota-{Guid.NewGuid():N}";
+        var quota = ctx.CreateQuota();
+        quota.Id = id;
+        quota.Key = $"key-{id}";
+        quota.QuotaName = "atomicity-grant";
+        quota.Used = 0;
+        quota.Limit = startingLimit;
+        quota.Type = "prepaid";
+        await ctx.SaveAsync(quota);
+
+        await ParallelRunner.RunAllAsync(n, _ => _backend.ExecuteAsync(async () =>
+        {
+            await ctx.GrantQuotaAsync(id, grant);
+            return true;
+        }));
+
+        var expected = startingLimit + n * grant;
+        var finalLimit = ctx.Quotas.First(q => q.Id == id).Limit;
+        finalLimit.Should().Be(expected,
+            $"[{_backend.Name}] every grant must be applied exactly once — final Limit == starting + sum(grants), no lost updates");
+    }
+
+    /// <summary>
+    /// N parallel reserve+settle cycles modelling the production admission/reconciliation flow.
+    /// Each operation reserves <c>reserve</c> units up front via <see cref="IDataContext.TryConsumeQuotaAsync"/>,
+    /// then reconciles the difference against the actual usage via
+    /// <see cref="IDataContext.SettleQuotaAsync"/> (<c>delta = actual - reserve</c>, here negative).
+    /// The reserves and settles from different operations interleave freely, yet the final <c>Used</c>
+    /// must reconcile to exactly <c>N * actual</c> with no lost updates and must never go negative.
+    /// </summary>
+    [Fact]
+    public async Task Settle_reconciles_reservations_exactly_under_parallelism()
+    {
+        var ctx = _backend.Context;
+        var n = _backend.Parallelism;
+        const float reserve = 2f;   // reserved up-front at admission
+        const float actual = 1f;    // real usage known only after the response
+        const float settleDelta = actual - reserve; // -1: release the unused portion
+
+        // Limit is set so that even if every reservation is taken before any settle runs, the peak
+        // Used (n * reserve) still fits — so every reserve must succeed and the only thing under test
+        // is that the settles reconcile exactly.
+        var limit = n * reserve;
+
+        var id = $"quota-{Guid.NewGuid():N}";
+        var quota = ctx.CreateQuota();
+        quota.Id = id;
+        quota.Key = $"key-{id}";
+        quota.QuotaName = "atomicity-settle";
+        quota.Used = 0;
+        quota.Limit = limit;
+        quota.Type = "prepaid";
+        await ctx.SaveAsync(quota);
+
+        var results = await ParallelRunner.RunAllAsync(n, async _ =>
+        {
+            var consume = await _backend.ExecuteAsync(() => ctx.TryConsumeQuotaAsync(id, reserve));
+            await _backend.ExecuteAsync(async () =>
+            {
+                await ctx.SettleQuotaAsync(id, settleDelta);
+                return true;
+            });
+            return consume;
+        });
+
+        results.Count(r => r == QuotaConsumeResult.Consumed).Should().Be(n,
+            $"[{_backend.Name}] Limit == n*reserve, so every reservation must be admitted");
+
+        var finalUsed = ctx.Quotas.First(q => q.Id == id).Used;
+        finalUsed.Should().Be(n * actual,
+            $"[{_backend.Name}] Used must reconcile to exactly n*actual after every reserve is settled — no lost updates");
+        finalUsed.Should().BeGreaterThanOrEqualTo(0f,
+            $"[{_backend.Name}] Used must never be driven negative by settlement");
     }
 
     /// <summary>

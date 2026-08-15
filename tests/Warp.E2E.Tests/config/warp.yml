@@ -1,0 +1,164 @@
+# Warp gateway configuration for the E2E suite.
+#
+# Routes are deliberately self-contained (no external OpenAPI spec fetch, no memoryalpha
+# dependency) so the stack is deterministic and offline. The upstream cluster points at a
+# stub echo service that reflects the request (method/path/headers/body) as JSON, which lets
+# the tests assert both proxy behaviour and gateway header injection.
+
+$include:
+  - datacontext.yml
+
+ReverseProxy:
+  Clusters:
+    echo_cluster:
+      Destinations:
+        echo:
+          Address: "${ECHO_ADDR:http://echo:8080}"
+
+  Routes:
+    # 5. Gateway trust marker demo (plain proxy, NO identity middleware). Used only by the
+    #    dedicated "trust" gateway (GATEWAY_SHARED_SECRET set) to prove the gateway strips any
+    #    client-supplied identity/marker headers and injects the shared-secret X-Gateway-Auth.
+    trust_echo:
+      ClusterId: "echo_cluster"
+      Match:
+        Path: "/trust/{**catch-all}"
+      Transforms:
+        - PathRemovePrefix: "/trust"
+
+    # 1. Plain synchronous proxy. PermissionsChecker enforces the X-JWT-Email identity header
+    #    (auth boundary), then the request is forwarded to the echo upstream unchanged.
+    sync_echo:
+      ClusterId: "echo_cluster"
+      Match:
+        Path: "/echo/{**catch-all}"
+      Transforms:
+        - PathRemovePrefix: "/echo"
+      Metadata:
+        Preprocess:
+          - Type: "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium"
+            Options:
+              UserIdHeader: "X-JWT-Email"
+              CreateUserIfNotFound: true
+              DefaultPermissions:
+                - "user"
+
+    # 3. Prepaid quota admission control. A small per-key limit lets the tests exhaust it and
+    #    assert 429-at-admission with no upstream dispatch.
+    quota_echo:
+      ClusterId: "echo_cluster"
+      Match:
+        Path: "/quota/{**catch-all}"
+      Transforms:
+        - PathRemovePrefix: "/quota"
+      Metadata:
+        Preprocess:
+          - Type: "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium"
+            Options:
+              UserIdHeader: "X-JWT-Email"
+              CreateUserIfNotFound: true
+          - Type: "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium"
+            Options:
+              QuotaName: "slips"
+              QuotaType: "prepaid"
+              QuotaLimit: 3          # tiny quota so the 4th request is rejected
+              ReserveAmount: 1
+
+    # 4. Rate limiting. A low token-bucket rate lets a burst trip 429.
+    rl_echo:
+      ClusterId: "echo_cluster"
+      Match:
+        Path: "/rl/{**catch-all}"
+      Transforms:
+        - PathRemovePrefix: "/rl"
+      Metadata:
+        Preprocess:
+          - Type: "Warp.Dilithium.Middleware.RateLimiter, warp.dilithium"
+            Options:
+              RateLimitHz: 3.0
+
+    # 2. Async lifecycle (submit/status/result/cancel). Jobs are enqueued to Redis and picked
+    #    up by plasma, which dispatches to the echo upstream and marks them completed.
+    async_echo:
+      ClusterId: "echo_cluster"
+      Match:
+        Path: "/async/{**catch-all}"
+      Transforms:
+        - PathRemovePrefix: "/async"
+      Metadata:
+        Preprocess:
+          - Type: "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium"
+            Options:
+              UserIdHeader: "X-JWT-Email"
+              CreateUserIfNotFound: true
+          - Type: "Warp.Dilithium.Middleware.QuotaChecker, warp.dilithium"
+            Options:
+              QuotaName: "slips"
+              QuotaType: "prepaid"
+              QuotaLimit: 5000
+              ReserveAmount: 1
+        Predispatch:
+          - Type: "Warp.Dilithium.Middleware.RedisAsyncApiHandler, warp.dilithium"
+            Options:
+              ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379,defaultDatabase=0}"
+              Channel: "echo_async"
+              MaxConcurrentDispatches: 10
+              DispatchTimeoutMs: 30000
+              UserIdHeader: "X-JWT-Email"
+
+    # 6. Stripe payment credit. Creates a PaymentIntent in localstripe; the signed
+    #    payment_intent.succeeded webhook (delivered to latinum) grants prepaid quota.
+    stripe_payments:
+      ClusterId: "echo_cluster"
+      Match:
+        Path: "/payment/{**catch-all}"
+      Metadata:
+        Preprocess:
+          - Type: "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium"
+            Options:
+              UserIdHeader: "X-JWT-Email"
+              CreateUserIfNotFound: true
+        Predispatch:
+          - Type: "Warp.Latinum.Middleware.Stripe.StripePaymentMiddleware, warp.latinum"
+            Options:
+              ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379,defaultDatabase=0}"
+              Channel: "stripe_payment_async"
+              MaxConcurrentDispatches: 5
+              DispatchTimeoutMs: 60000
+              UserIdHeader: "X-JWT-Email"
+              CurrencyMultiplier: 1000
+              StripeSecretKey: "${STRIPE_SECRET_KEY:sk_test_e2e}"
+              StripePublishableKey: "${STRIPE_PUBLISHABLE_KEY:pk_test_e2e}"
+              Currency: "usd"
+              PaymentIntentExpirationMinutes: 30
+              StripeApiBase: "${STRIPE_API_BASE:http://localstripe:8420}"
+              QuotaName: "slips"
+
+    # 7. Stripe subscription checkout. Creates a Checkout Session in localstripe; the signed
+    #    checkout.session.completed webhook updates the user's plan/quota.
+    stripe_subscriptions:
+      ClusterId: "echo_cluster"
+      Match:
+        Path: "/subscription/{**catch-all}"
+      Metadata:
+        Preprocess:
+          - Type: "Warp.Dilithium.Middleware.PermissionsChecker, warp.dilithium"
+            Options:
+              UserIdHeader: "X-JWT-Email"
+              CreateUserIfNotFound: true
+        Predispatch:
+          - Type: "Warp.Latinum.Middleware.Stripe.StripeSubscriptionMiddleware, warp.latinum"
+            Options:
+              Plans:
+                $include: stripe-plans.yml
+              ConnectionString: "${REDIS_CONNECTION_STRING:redis:6379,defaultDatabase=0}"
+              Channel: "stripe_subscription_async"
+              MaxConcurrentDispatches: 5
+              DispatchTimeoutMs: 60000
+              UserIdHeader: "X-JWT-Email"
+              StripeSecretKey: "${STRIPE_SECRET_KEY:sk_test_e2e}"
+              StripePublishableKey: "${STRIPE_PUBLISHABLE_KEY:pk_test_e2e}"
+              StripeApiBase: "${STRIPE_API_BASE:http://localstripe:8420}"
+              SuccessUrl: "${STRIPE_SUCCESS_URL:http://warp-latinum:5004/stripe/success}"
+              CancelUrl: "${STRIPE_CANCEL_URL:http://warp-latinum:5004/stripe/cancel}"
+              SessionExpirationMinutes: 30
