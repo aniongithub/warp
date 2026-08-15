@@ -1,0 +1,96 @@
+name: Release
+
+# Publishes the multi-arch warp runtime image to Docker Hub when a GitHub
+# Release is published. The runtime image is a single artifact that serves all
+# roles (gateway / plasma / latinum) selected at deploy time via RUN_WARP /
+# RUN_PLASMA env flags or a command override.
+on:
+  release:
+    types: [published]
+
+# Never run two publishes for the same tag at once, and don't cancel an
+# in-flight publish (a partial push is worse than a slightly delayed one).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Single source of truth for the namespace: the same Actions variable used to
+  # authenticate. The repo name is fixed.
+  IMAGE: ${{ vars.DOCKERHUB_USERNAME }}/warp
+
+jobs:
+  publish:
+    name: build & push image
+    runs-on: ubuntu-latest
+    # Only publish releases cut from the default branch. target_commitish is the
+    # branch (or commit) the release was created against; releases tagged off any
+    # other branch are ignored so we never ship an image from unreviewed history.
+    if: github.event.release.target_commitish == github.event.repository.default_branch
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          # Namespace is public config (an Actions variable), not a secret; only the PAT is.
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PAT }}
+
+      - name: Derive image tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          # The release tag drives the semver tags; `latest` moves only for
+          # non-prerelease releases.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
+
+      - name: Build and push runtime image (linux/amd64, linux/arm64)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Emit a single clean image index (no attestation manifest) so the
+          # published index digest is what deploy recipes pin by.
+          provenance: false
+
+      - name: Publish pinned digest to the run summary
+        run: |
+          {
+            echo "## Published \`${{ env.IMAGE }}\`"
+            echo ""
+            echo "**Release:** ${{ github.event.release.tag_name }}"
+            echo ""
+            echo "Pin this immutable digest in deploy recipes:"
+            echo ""
+            echo '```'
+            echo "${{ env.IMAGE }}@${{ steps.build.outputs.digest }}"
+            echo '```'
+            echo ""
+            echo "Tags pushed:"
+            echo ""
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
