@@ -120,3 +120,6 @@ swagger-dummy.json
 
 # devcontainer CLI generated lockfile
 .devcontainer/devcontainer-lock.json
+
+# devcontainer worktree git-mount override (generated per checkout)
+.devcontainer/docker-compose.worktree.yml

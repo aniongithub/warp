@@ -2,7 +2,8 @@
   "name": "Warp API Gateway",
   "dockerComposeFile": [
     "../docker-compose.yml",
-    "docker-compose.devcontainer.yml"
+    "docker-compose.devcontainer.yml",
+    "docker-compose.worktree.yml"
   ],
   "service": "warp",
   "shutdownAction": "stopCompose",
