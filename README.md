@@ -64,6 +64,18 @@ Warp's control plane assumes the gateway is the single authenticated front door 
 
 - **Pluggable data context**: Use SQLite, Postgres, Firebase or a simple JSON file for persistence (see `warp.core/Data/Contexts/`). You can also add new storage backends by implementing the `IDataContext` interface.
 - **Schema**: Users, API keys, quotas, and requests are all stored and managed centrally.
+- **Transactional journal**: `IJournalStore.BeginAsync` opens an `IAsyncDisposable` transaction that records durable intent, ordered facts, and exactly one terminal outcome. `IJournalEntry` fluent extensions create typed root facts, nested child facts, causation links, schema versions, and versioned payloads. Core includes SQLite and append-only JSONL stores with optimistic sequencing, idempotent appends, crash recovery, and cursor-based reads.
+
+A journal store can be created from Warp configuration:
+
+```yaml
+Journal:
+  Type: "Warp.Core.Journal.SqliteJournalStore, warp.core"
+  Args:
+    filePath: "data/journal.db"
+```
+
+Use `Warp.Core.Journal.JsonLinesJournalStore, warp.core` with a `.jsonl` path for the append-only file backend.
 
 ## Getting Started (Devcontainers)
 
