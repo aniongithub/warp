@@ -1,5 +1,4 @@
 using System.Runtime.CompilerServices;
-using System.Text;
 using System.Text.Json;
 
 namespace Warp.Core.Journal;
@@ -7,6 +6,7 @@ namespace Warp.Core.Journal;
 public sealed class JsonLinesJournalStore : IJournalStore
 {
     private readonly string _filePath;
+    private readonly string _lockFilePath;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly List<JournalRecord> _entries = [];
     private readonly Dictionary<string, RootState> _roots = new(StringComparer.Ordinal);
@@ -19,14 +19,15 @@ public sealed class JsonLinesJournalStore : IJournalStore
             throw new ArgumentException("Journal file path cannot be empty.", nameof(filePath));
 
         _filePath = Path.GetFullPath(filePath);
+        _lockFilePath = _filePath + ".lock";
         var directory = Path.GetDirectoryName(_filePath);
         if (!string.IsNullOrWhiteSpace(directory))
             Directory.CreateDirectory(directory);
         if (!File.Exists(_filePath))
             File.WriteAllBytes(_filePath, []);
 
-        using var stream = OpenExclusive(CancellationToken.None);
-        ReloadFromStream(stream);
+        using var lease = OpenExclusive(CancellationToken.None);
+        ReloadFromStream(lease.Stream);
     }
 
     public async Task<JournalAppendResult> AppendAsync(
@@ -39,7 +40,8 @@ public sealed class JsonLinesJournalStore : IJournalStore
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            await using var stream = await OpenExclusiveAsync(cancellationToken);
+            await using var lease = await OpenExclusiveAsync(cancellationToken);
+            var stream = lease.Stream;
             ReloadFromStream(stream);
 
             if (_appends.TryGetValue(append.IdempotencyKey, out var applied))
@@ -88,7 +90,8 @@ public sealed class JsonLinesJournalStore : IJournalStore
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            await using var stream = await OpenExclusiveAsync(cancellationToken);
+            await using var lease = await OpenExclusiveAsync(cancellationToken);
+            var stream = lease.Stream;
             if (stream.Length != _knownLength)
                 ReloadFromStream(stream);
             snapshot = JournalStoreSupport.ApplyQuery(_entries, query).ToArray();
@@ -213,27 +216,44 @@ public sealed class JsonLinesJournalStore : IJournalStore
             entries[^1].Sequence);
     }
 
-    private FileStream OpenExclusive(CancellationToken cancellationToken) =>
+    private JournalFileLease OpenExclusive(CancellationToken cancellationToken) =>
         OpenExclusiveAsync(cancellationToken).GetAwaiter().GetResult();
 
-    private async Task<FileStream> OpenExclusiveAsync(CancellationToken cancellationToken)
+    private async Task<JournalFileLease> OpenExclusiveAsync(CancellationToken cancellationToken)
     {
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            FileStream? lockStream = null;
             try
             {
-                return new FileStream(
+                lockStream = new FileStream(
+                    _lockFilePath,
+                    FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite,
+                    FileShare.None,
+                    1,
+                    FileOptions.Asynchronous);
+                var journalStream = new FileStream(
                     _filePath,
                     FileMode.OpenOrCreate,
                     FileAccess.ReadWrite,
                     FileShare.Read,
                     4096,
                     FileOptions.Asynchronous);
+                return new JournalFileLease(lockStream, journalStream);
             }
             catch (IOException)
             {
+                if (lockStream is not null)
+                    await lockStream.DisposeAsync();
                 await Task.Delay(20, cancellationToken);
+            }
+            catch
+            {
+                if (lockStream is not null)
+                    await lockStream.DisposeAsync();
+                throw;
             }
         }
     }
@@ -262,4 +282,23 @@ public sealed class JsonLinesJournalStore : IJournalStore
 
     private sealed record RootState(long LastSequence, bool HasTerminal);
     private sealed record AppliedAppend(string RootId, string Fingerprint, long LastSequence);
+
+    private sealed class JournalFileLease(
+        FileStream lockStream,
+        FileStream journalStream) : IDisposable, IAsyncDisposable
+    {
+        internal FileStream Stream { get; } = journalStream;
+
+        public void Dispose()
+        {
+            Stream.Dispose();
+            lockStream.Dispose();
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await Stream.DisposeAsync();
+            await lockStream.DisposeAsync();
+        }
+    }
 }
