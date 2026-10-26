@@ -25,13 +25,13 @@
         "zaaack.markdown-editor",
         "ms-python.debugpy",
         "ms-python.python",
-        "Youngki.easy-redis"
+        "Youngki.easy-redis",
+        "augustocdias.tasks-shell-input"
       ]
     }
   },
   "initializeCommand": ".devcontainer/initializeCommand.sh",
-  "forwardPorts": [
-    5000,
-    5001
-  ]
+  "otherPortsAttributes": {
+    "onAutoForward": "ignore"
+  }
 }

@@ -49,7 +49,7 @@ Now synchronous API implementations are transformed into asynchronous jobs with 
 1. Open Run and Debug panel
 2. Select "Warp Async API"
 3. Click Run
-4. Visit http://localhost:8000
+4. The compound opens the chat UI on this checkout's generated host port.
 
 ```
 
@@ -62,8 +62,8 @@ Now synchronous API implementations are transformed into asynchronous jobs with 
 2. Select "Warp Async API" from dropdown  
 3. Click play button
 
-This starts Warp, Warp.Plasma and the Memory Alpha chat interface at http://localhost:8000
-Then visit http://localhost:8000 and chat with Memory Alpha!
+This starts Warp, Warp.Plasma, the Memory Alpha chat interface, and the built-in
+browser debugger. The browser URL is read from `.devcontainer/ports.env`.
 
 ## Example Configuration
 

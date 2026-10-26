@@ -123,3 +123,6 @@ swagger-dummy.json
 
 # devcontainer worktree git-mount override (generated per checkout)
 .devcontainer/docker-compose.worktree.yml
+
+# devcontainer host-port assignments (generated per checkout)
+.devcontainer/ports.env

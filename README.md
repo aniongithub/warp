@@ -97,8 +97,17 @@ For more details, see the [VS Code Dev Containers documentation](https://code.vi
 #### Using VS Code (Recommended)
 
 - Use the VS Code Run/Debug panel and select the **Warp API Gateway** compound configuration to launch the main gateway, Developer API, and Admin API projects together.
-- To launch the developer console UI, select the **Developer Console** compound configuration. This will start both the static server and a Chrome browser for front-end debugging.
+- The async and monetization compounds launch their chat UI with VS Code's built-in JavaScript debugger (`pwa-chrome`); no legacy Chrome debugger extension is required.
 - This approach ensures all services are started and debugged in an integrated environment.
+
+Each devcontainer checkout receives its own host-port block. The host-visible values are
+written to `.devcontainer/ports.env`; container-to-container traffic continues to use
+stable Compose service names and container ports.
+
+```bash
+source .devcontainer/ports.env
+curl "http://localhost:$WARP_GATEWAY_HOST_PORT/..."
+```
 
 #### VS Code Launch Configurations
 
