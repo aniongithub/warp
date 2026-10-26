@@ -3,6 +3,16 @@ using Warp.Core.Data;
 
 namespace Warp.Core.Journal;
 
+public enum JournalPhase
+{
+    Started,
+    Fact,
+    Completed,
+    Failed,
+    Cancelled,
+    Indeterminate
+}
+
 public interface IJournalEntry : IEntity
 {
     IJournalEntry Root { get; set; }
@@ -24,4 +34,17 @@ public interface IJournalEntry : IEntity
     string? OutcomeCode { get; set; }
     string? OutcomeMessage { get; set; }
     bool? Retryable { get; set; }
+}
+
+public interface IJournalEntry<TSubject> : IJournalEntry
+    where TSubject : IEntity
+{
+    TSubject Subject { get; set; }
+}
+
+public interface IJournalEntry<TSubject, TObject> : IJournalEntry<TSubject>
+    where TSubject : IEntity
+    where TObject : IEntity
+{
+    TObject Object { get; set; }
 }

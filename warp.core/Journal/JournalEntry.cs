@@ -23,3 +23,16 @@ public class JournalEntry : IJournalEntry
     public string? OutcomeMessage { get; set; }
     public bool? Retryable { get; set; }
 }
+
+public class JournalEntry<TSubject> : JournalEntry, IJournalEntry<TSubject>
+    where TSubject : IEntity
+{
+    public required TSubject Subject { get; set; }
+}
+
+public class JournalEntry<TSubject, TObject> : JournalEntry<TSubject>, IJournalEntry<TSubject, TObject>
+    where TSubject : IEntity
+    where TObject : IEntity
+{
+    public required TObject Object { get; set; }
+}
