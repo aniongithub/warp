@@ -37,7 +37,10 @@ public abstract class JobContextBase : IJobContext
     // Abstract methods that concrete implementations must provide
     public abstract void Initialize(string connectionString, string channel);
     public abstract IJob CreateJob();
-    public abstract Task EnqueueJobAsync<T>(T job) where T : class, IJob;
+    public virtual IJobGraph CreateGraph() => new JobGraph(CreateJob);
+    public abstract Task EnqueueAsync(IJob job);
+    public abstract Task EnqueueAsync(IJobGraph graph);
+    public virtual Task EnqueueJobAsync<T>(T job) where T : class, IJob => EnqueueAsync(job);
     public abstract Task<DequeueResult<T>> DequeueJobAsync<T>() where T : class, IJob;
     public abstract Task<T> LookupJobAsync<T>(string id, JobStatus status, string userId) where T : class, IJob;
     public abstract Task<JobStatus> GetJobStatusAsync(string id, string userId);

@@ -34,37 +34,176 @@ public class RedisJobContext : JobContextBase
     }
 
     private string JobKey(string id, JobStatus status, string userId) => $"channel:{_channel}:job:{id}@{status}:{userId}";
+    private string JobIndexKey(string id) => $"channel:{_channel}:job-index:{id}";
+    private string RemainingDependenciesKey(string id) => $"channel:{_channel}:job:{id}:dependencies-remaining";
     private string QueueKey(JobStatus status) => $"channel:{_channel}:queue:{status}";
     // Reliable-queue "processing" list: holds the full job keys currently being dispatched by a worker.
     // An entry lingering here after a crash marks an in-flight job that must be recovered.
     private string ProcessingKey() => $"channel:{_channel}:processing";
+    private string GraphMutationLockKey() => $"channel:{_channel}:graph-mutation-lock";
 
     public override IJob CreateJob() => new Job();
 
-    public override async Task EnqueueJobAsync<T>(T job)
+    public override Task EnqueueJobAsync<T>(T job) => EnqueueAsync(job);
+
+    public override async Task EnqueueAsync(IJob job)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        if (HasOutgoingEdges(job))
+            throw new ArgumentException("Jobs with outcome callbacks must be submitted as a graph.", nameof(job));
+
+        job.RootJobId = string.IsNullOrWhiteSpace(job.RootJobId) ? job.Id : job.RootJobId;
+        if (!StringComparer.Ordinal.Equals(job.RootJobId, job.Id))
+            throw new ArgumentException("A standalone job must use its own id as RootJobId.", nameof(job));
+
+        await EnqueueIndependentJobAsync(job);
+    }
+
+    public override async Task EnqueueAsync(IJobGraph jobGraph)
     {
         EnsureInitialized();
-        // TODO: Replace with proper logging
-        Console.WriteLine($"Enqueuing job: {job.Id}");
-        if (string.IsNullOrEmpty(job.User?.Id)) throw new ArgumentException("User.Id required");
-        var key = JobKey(job.Id, job.Status, job.User.Id);
-        var queueKey = QueueKey(job.Status);
-
-        try
+        ArgumentNullException.ThrowIfNull(jobGraph);
+        var jobs = jobGraph.Jobs;
+        if (jobs.Count == 0)
+            throw new ArgumentException("At least one job is required.", nameof(jobGraph));
+        if (jobs.Count == 1 && !HasOutgoingEdges(jobs.First()))
         {
-            Console.WriteLine($"Storing job in Redis with key: {key}");
-            await _db!.StringSetAsync(key, SerializeJob(job));
+            await EnqueueAsync(jobs.First());
+            return;
+        }
 
-            // The queue carries the FULL job key (not just the id) so consumers can fetch
-            // the job data with a direct O(1) GET instead of an O(N) wildcard KEYS scan.
-            Console.WriteLine($"Pushing job key to queue: {queueKey}");
-            await _db.ListRightPushAsync(queueKey, key);
-        }
-        catch (Exception ex)
+        await using var graphLock = await AcquireGraphMutationLockAsync();
+        var graph = jobs.ToDictionary(job => job.Id, StringComparer.Ordinal);
+        if (graph.Count != jobs.Count)
+            throw new ArgumentException("Job ids must be unique within a graph.", nameof(jobGraph));
+
+        var incoming = jobs.ToDictionary(job => job.Id, _ => 0, StringComparer.Ordinal);
+        foreach (var job in jobs)
         {
-            Console.WriteLine($"Error enqueuing job: {ex.Message}");
-            throw;
+            if (string.IsNullOrWhiteSpace(job.Id))
+                throw new ArgumentException("Job id is required.", nameof(jobGraph));
+            if (string.IsNullOrWhiteSpace(job.User?.Id))
+                throw new ArgumentException($"User.Id is required for job {job.Id}.", nameof(jobGraph));
+            if (await FindStoredJobAsync(job.Id) is not null)
+                throw new InvalidOperationException($"Job {job.Id} already exists.");
+
+            NormalizeEdges(job.OnSuccess);
+            NormalizeEdges(job.OnFailure);
+            NormalizeEdges(job.OnCompletion);
+            var targets = job.OnSuccess
+                .Concat(job.OnFailure)
+                .Concat(job.OnCompletion)
+                .ToArray();
+            if (targets.Length != targets.Distinct(StringComparer.Ordinal).Count())
+            {
+                throw new ArgumentException(
+                    $"Job {job.Id} cannot target the same job for multiple outcomes.",
+                    nameof(jobGraph));
+            }
+
+            foreach (var targetId in targets)
+            {
+                if (StringComparer.Ordinal.Equals(targetId, job.Id))
+                    throw new ArgumentException($"Job {job.Id} cannot target itself.", nameof(jobGraph));
+                if (!graph.ContainsKey(targetId))
+                    throw new ArgumentException(
+                        $"Job {job.Id} targets {targetId}, which is not part of the graph.",
+                        nameof(jobGraph));
+                incoming[targetId]++;
+            }
         }
+
+        ValidateAcyclicGraph(graph);
+        var sinks = jobs.Where(job => !HasOutgoingEdges(job)).ToArray();
+        if (sinks.Length != 1)
+        {
+            throw new ArgumentException(
+                "A job graph must have exactly one top-level job with no outgoing callbacks.",
+                nameof(jobGraph));
+        }
+
+        var rootJobId = sinks[0].Id;
+        foreach (var job in jobs)
+        {
+            if (!string.IsNullOrWhiteSpace(job.RootJobId) &&
+                !StringComparer.Ordinal.Equals(job.RootJobId, rootJobId))
+            {
+                throw new ArgumentException($"Job {job.Id} belongs to a different root.", nameof(jobGraph));
+            }
+
+            job.RootJobId = rootJobId;
+            job.QueuedAt = DateTime.UtcNow;
+            job.StartedAt = null;
+            job.EndedAt = null;
+            job.Status = incoming[job.Id] == 0 ? JobStatus.Queued : JobStatus.Waiting;
+        }
+
+        var transaction = _db!.CreateTransaction();
+        foreach (var job in jobs)
+        {
+            transaction.AddCondition(Condition.KeyNotExists(JobIndexKey(job.Id)));
+            var key = JobKey(job.Id, job.Status, job.User!.Id);
+            _ = transaction.StringSetAsync(key, SerializeJob(job));
+            _ = transaction.StringSetAsync(JobIndexKey(job.Id), key);
+            _ = transaction.ListRightPushAsync(QueueKey(job.Status), key);
+            if (incoming[job.Id] > 0)
+                _ = transaction.StringSetAsync(RemainingDependenciesKey(job.Id), incoming[job.Id]);
+        }
+
+        if (!await transaction.ExecuteAsync())
+            throw new InvalidOperationException("The job graph changed while it was being enqueued.");
+    }
+
+    private async Task EnqueueIndependentJobAsync<T>(T job) where T : class, IJob
+    {
+        EnsureInitialized();
+        if (string.IsNullOrWhiteSpace(job.User?.Id))
+            throw new ArgumentException("User.Id required", nameof(job));
+
+        job.Status = JobStatus.Queued;
+        job.QueuedAt = DateTime.UtcNow;
+        job.StartedAt = null;
+        job.EndedAt = null;
+        var key = JobKey(job.Id, JobStatus.Queued, job.User.Id);
+        await _db!.StringSetAsync(key, SerializeJob(job));
+        await _db.ListRightPushAsync(QueueKey(JobStatus.Queued), key);
+    }
+
+    private static void NormalizeEdges(List<string> edges)
+    {
+        var normalized = edges
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        edges.Clear();
+        edges.AddRange(normalized);
+    }
+
+    private static void ValidateAcyclicGraph(IReadOnlyDictionary<string, IJob> graph)
+    {
+        var inDegree = graph.Keys.ToDictionary(id => id, _ => 0, StringComparer.Ordinal);
+        foreach (var job in graph.Values)
+        {
+            foreach (var targetId in AllTargets(job))
+                inDegree[targetId]++;
+        }
+
+        var ready = new Queue<string>(inDegree.Where(pair => pair.Value == 0).Select(pair => pair.Key));
+        var visited = 0;
+
+        while (ready.TryDequeue(out var id))
+        {
+            visited++;
+            foreach (var targetId in AllTargets(graph[id]))
+            {
+                inDegree[targetId]--;
+                if (inDegree[targetId] == 0)
+                    ready.Enqueue(targetId);
+            }
+        }
+
+        if (visited != graph.Count)
+            throw new ArgumentException("Job dependencies must form an acyclic graph.", nameof(graph));
     }
 
     public override async Task<DequeueResult<T>> DequeueJobAsync<T>()
@@ -126,6 +265,8 @@ public class RedisJobContext : JobContextBase
         var transaction = _db.CreateTransaction();
         transaction.AddCondition(Condition.KeyExists(queuedKey));
         _ = transaction.StringSetAsync(runningKey, SerializeJob(job));
+        if (IsGraphJob(job))
+            _ = transaction.StringSetAsync(JobIndexKey(job.Id), runningKey);
         _ = transaction.ListRightPushAsync(QueueKey(JobStatus.Running), runningKey);
         _ = transaction.KeyDeleteAsync(queuedKey);
         _ = transaction.ListRemoveAsync(processingKey, queuedKey);
@@ -140,6 +281,33 @@ public class RedisJobContext : JobContextBase
         }
 
         return DequeueResult<T>.Success(job);
+    }
+
+    private async Task<StoredJob?> FindStoredJobAsync(string id)
+    {
+        EnsureInitialized();
+        var indexedKey = await _db!.StringGetAsync(JobIndexKey(id));
+        if (indexedKey.HasValue)
+        {
+            var key = indexedKey.ToString();
+            var data = await _db.StringGetAsync(key);
+            if (data.HasValue)
+                return new StoredJob(DeserializeJob<Job>(data.ToString()), key);
+        }
+
+        var server = _db.Multiplexer.GetServer(_db.Multiplexer.GetEndPoints().First());
+        var pattern = $"channel:{_channel}:job:{id}@*:*";
+        var fallbackKey = server.Keys(pattern: pattern).FirstOrDefault();
+        if (fallbackKey == default(RedisKey))
+            return null;
+
+        var fallbackData = await _db.StringGetAsync(fallbackKey);
+        if (!fallbackData.HasValue)
+            return null;
+
+        var fallbackKeyString = fallbackKey.ToString();
+        await _db.StringSetAsync(JobIndexKey(id), fallbackKeyString);
+        return new StoredJob(DeserializeJob<Job>(fallbackData.ToString()), fallbackKeyString);
     }
 
     public override async Task<T> LookupJobAsync<T>(string id, JobStatus status, string userId)
@@ -217,88 +385,262 @@ public class RedisJobContext : JobContextBase
     public override async Task UpdateJobAsync<T>(T job, JobStatus newStatus, string? error = null, string? output = null)
     {
         EnsureInitialized();
-        if (string.IsNullOrEmpty(job.User?.Id)) throw new ArgumentException("User.Id required");
-        
-        var oldKey = JobKey(job.Id, job.Status, job.User.Id);
-        var newKey = JobKey(job.Id, newStatus, job.User.Id);
-        
-        // Update job properties
         var oldStatus = job.Status;
-        job.Status = newStatus;
-        job.EndedAt = DateTime.UtcNow;
-        
-        if (!string.IsNullOrEmpty(error))
-            job.Error = error;
-        
-        if (!string.IsNullOrEmpty(output))
-            job.Output = output;
-        
-        // Move job to new status (queues carry the full job key, not the bare id)
-        await _db!.StringSetAsync(newKey, SerializeJob(job));
-        await _db.ListRightPushAsync(QueueKey(newStatus), newKey);
-
-        // Remove from old status
-        await _db.KeyDeleteAsync(oldKey);
-        await _db.ListRemoveAsync(QueueKey(oldStatus), oldKey);
-
-        // Clear the in-flight processing marker (no-op unless the job was Running).
-        await _db.ListRemoveAsync(ProcessingKey(), oldKey);
+        if (!await TransitionJobAsync(job, oldStatus, newStatus, error, output))
+            throw new InvalidOperationException($"Job {job.Id} is no longer in the {oldStatus} state.");
     }
 
     public override async Task<bool> UpdateJobStatusAsync(string jobId, JobStatus fromStatus, JobStatus toStatus, string userId, string? error = null, string? output = null)
     {
         EnsureInitialized();
-        
-        // Find the job with the from status (using wildcard if userId is "*")
-        Job? job = null;
+        Job job;
         try
         {
             job = await LookupJobAsync<Job>(jobId, fromStatus, userId);
         }
         catch (KeyNotFoundException)
         {
-            // Job not found in the expected status
             return false;
         }
-        
-        if (job == null)
+
+        return await TransitionJobAsync(job, fromStatus, toStatus, error, output);
+    }
+
+    private async Task<bool> TransitionJobAsync(
+        IJob job,
+        JobStatus fromStatus,
+        JobStatus toStatus,
+        string? error,
+        string? output)
+    {
+        if (string.IsNullOrWhiteSpace(job.User?.Id))
             return false;
-            
-        // Get the actual user ID for key construction
-        var actualUserId = job.User?.Id ?? "";
-        if (string.IsNullOrEmpty(actualUserId))
+        if (fromStatus == JobStatus.Waiting &&
+            toStatus is not JobStatus.Failed and not JobStatus.Canceled)
+        {
             return false;
-            
-        var fromKey = JobKey(jobId, fromStatus, actualUserId);
-        var toKey = JobKey(jobId, toStatus, actualUserId);
-        
-        // Use Redis transaction for atomicity
+        }
+
+        var terminal = toStatus is
+            JobStatus.Completed or
+            JobStatus.Failed or
+            JobStatus.Canceled or
+            JobStatus.Skipped;
+        if (!terminal || !HasOutgoingEdges(job))
+            return await TransitionSingleJobAsync(job, fromStatus, toStatus, error, output);
+
+        await using var graphLock = await AcquireGraphMutationLockAsync();
+        return await TransitionGraphJobAsync(job, fromStatus, toStatus, error, output);
+    }
+
+    private async Task<bool> TransitionSingleJobAsync(
+        IJob job,
+        JobStatus fromStatus,
+        JobStatus toStatus,
+        string? error,
+        string? output)
+    {
+        var userId = job.User!.Id;
+        var fromKey = JobKey(job.Id, fromStatus, userId);
+        var toKey = JobKey(job.Id, toStatus, userId);
+        ApplyTransition(job, toStatus, error, output);
+
         var transaction = _db!.CreateTransaction();
-        
-        // Only proceed if the from key still exists (ensures atomicity)
         transaction.AddCondition(Condition.KeyExists(fromKey));
-        
-        // Update job properties
-        job.Status = toStatus;
-        job.EndedAt = DateTime.UtcNow;
-        
-        if (!string.IsNullOrEmpty(error))
-            job.Error = error;
-        
-        if (!string.IsNullOrEmpty(output))
-            job.Output = output;
-        
-        // Queue the operations (queues carry the full job key, not the bare id)
+        QueueTransition(transaction, job, fromStatus, fromKey, toStatus, toKey);
+        return await transaction.ExecuteAsync();
+    }
+
+    private async Task<bool> TransitionGraphJobAsync(
+        IJob job,
+        JobStatus fromStatus,
+        JobStatus toStatus,
+        string? error,
+        string? output)
+    {
+        var userId = job.User!.Id;
+        var fromKey = JobKey(job.Id, fromStatus, userId);
+        var toKey = JobKey(job.Id, toStatus, userId);
+        ApplyTransition(job, toStatus, error, output);
+
+        var resolutions = new Queue<(IJob Source, JobStatus Status)>();
+        resolutions.Enqueue((job, toStatus));
+        var storedJobs = new Dictionary<string, StoredJob>(StringComparer.Ordinal);
+        var remaining = new Dictionary<string, long>(StringComparer.Ordinal);
+        var transitions = new Dictionary<string, PendingJobTransition>(StringComparer.Ordinal);
+
+        while (resolutions.TryDequeue(out var resolution))
+        {
+            foreach (var targetId in UnselectedTargets(resolution.Source, resolution.Status))
+            {
+                if (transitions.TryGetValue(targetId, out var existing) &&
+                    existing.Status == JobStatus.Skipped)
+                {
+                    continue;
+                }
+
+                var stored = await GetWaitingJobAsync(targetId, storedJobs);
+                if (stored is null)
+                    continue;
+
+                var skipped = stored.Job;
+                skipped.Status = JobStatus.Skipped;
+                skipped.EndedAt = DateTime.UtcNow;
+                skipped.Error = $"Callback condition from {resolution.Source.Id} was not selected.";
+                var transition = new PendingJobTransition(
+                    skipped,
+                    stored.Key,
+                    JobStatus.Skipped,
+                    JobKey(skipped.Id, JobStatus.Skipped, skipped.User!.Id));
+                transitions[targetId] = transition;
+                remaining.Remove(targetId);
+                resolutions.Enqueue((skipped, JobStatus.Skipped));
+            }
+
+            foreach (var targetId in SelectedTargets(resolution.Source, resolution.Status))
+            {
+                if (transitions.ContainsKey(targetId))
+                    continue;
+
+                var stored = await GetWaitingJobAsync(targetId, storedJobs);
+                if (stored is null)
+                    continue;
+
+                if (!remaining.TryGetValue(targetId, out var count))
+                {
+                    var value = await _db!.StringGetAsync(RemainingDependenciesKey(targetId));
+                    count = value.HasValue ? (long)value : 0;
+                }
+
+                count--;
+                if (count <= 0)
+                {
+                    var ready = stored.Job;
+                    ready.Status = JobStatus.Queued;
+                    ready.StartedAt = null;
+                    ready.EndedAt = null;
+                    transitions[targetId] = new PendingJobTransition(
+                        ready,
+                        stored.Key,
+                        JobStatus.Queued,
+                        JobKey(ready.Id, JobStatus.Queued, ready.User!.Id));
+                    remaining.Remove(targetId);
+                }
+                else
+                {
+                    remaining[targetId] = count;
+                }
+            }
+        }
+
+        var transaction = _db!.CreateTransaction();
+        transaction.AddCondition(Condition.KeyExists(fromKey));
+        QueueTransition(transaction, job, fromStatus, fromKey, toStatus, toKey);
+
+        foreach (var pair in remaining)
+            _ = transaction.StringSetAsync(RemainingDependenciesKey(pair.Key), pair.Value);
+
+        foreach (var change in transitions.Values)
+        {
+            transaction.AddCondition(Condition.KeyExists(change.WaitingKey));
+            _ = transaction.StringSetAsync(change.NewKey, SerializeJob(change.Job));
+            _ = transaction.StringSetAsync(JobIndexKey(change.Job.Id), change.NewKey);
+            _ = transaction.ListRightPushAsync(QueueKey(change.Status), change.NewKey);
+            _ = transaction.KeyDeleteAsync(change.WaitingKey);
+            _ = transaction.ListRemoveAsync(QueueKey(JobStatus.Waiting), change.WaitingKey);
+            _ = transaction.KeyDeleteAsync(RemainingDependenciesKey(change.Job.Id));
+        }
+
+        return await transaction.ExecuteAsync();
+    }
+
+    private void QueueTransition(
+        ITransaction transaction,
+        IJob job,
+        JobStatus fromStatus,
+        string fromKey,
+        JobStatus toStatus,
+        string toKey)
+    {
         _ = transaction.StringSetAsync(toKey, SerializeJob(job));
+        if (IsGraphJob(job))
+            _ = transaction.StringSetAsync(JobIndexKey(job.Id), toKey);
         _ = transaction.ListRightPushAsync(QueueKey(toStatus), toKey);
         _ = transaction.KeyDeleteAsync(fromKey);
         _ = transaction.ListRemoveAsync(QueueKey(fromStatus), fromKey);
-        // Clear the in-flight processing marker (no-op unless the job was Running).
         _ = transaction.ListRemoveAsync(ProcessingKey(), fromKey);
-        
-        // Execute atomically
-        var success = await transaction.ExecuteAsync();
-        return success;
+    }
+
+    private static void ApplyTransition(
+        IJob job,
+        JobStatus toStatus,
+        string? error,
+        string? output)
+    {
+        job.Status = toStatus;
+        job.EndedAt = toStatus is
+            JobStatus.Completed or
+            JobStatus.Failed or
+            JobStatus.Canceled or
+            JobStatus.Skipped
+            ? DateTime.UtcNow
+            : null;
+        if (!string.IsNullOrEmpty(error))
+            job.Error = error;
+        if (!string.IsNullOrEmpty(output))
+            job.Output = output;
+    }
+
+    private static bool IsGraphJob(IJob job) =>
+        HasOutgoingEdges(job) || !StringComparer.Ordinal.Equals(job.RootJobId, job.Id);
+
+    private static bool HasOutgoingEdges(IJob job) =>
+        job.OnSuccess.Count > 0 ||
+        job.OnFailure.Count > 0 ||
+        job.OnCompletion.Count > 0;
+
+    private static IEnumerable<string> AllTargets(IJob job) =>
+        job.OnSuccess
+            .Concat(job.OnFailure)
+            .Concat(job.OnCompletion)
+            .Distinct(StringComparer.Ordinal);
+
+    private static IEnumerable<string> SelectedTargets(IJob job, JobStatus status)
+    {
+        var outcomeTargets = status switch
+        {
+            JobStatus.Completed => job.OnSuccess,
+            JobStatus.Failed or JobStatus.Canceled => job.OnFailure,
+            JobStatus.Skipped => [],
+            _ => []
+        };
+        return outcomeTargets
+            .Concat(job.OnCompletion)
+            .Distinct(StringComparer.Ordinal);
+    }
+
+    private static IEnumerable<string> UnselectedTargets(IJob job, JobStatus status) =>
+        status switch
+        {
+            JobStatus.Completed => job.OnFailure,
+            JobStatus.Failed or JobStatus.Canceled => job.OnSuccess,
+            JobStatus.Skipped => job.OnSuccess.Concat(job.OnFailure).Distinct(StringComparer.Ordinal),
+            _ => []
+        };
+
+    private async Task<StoredJob?> GetWaitingJobAsync(
+        string id,
+        IDictionary<string, StoredJob> cache)
+    {
+        if (!cache.TryGetValue(id, out var stored))
+        {
+            stored = await FindStoredJobAsync(id);
+            if (stored is null)
+                return null;
+            cache[id] = stored;
+        }
+
+        return stored.Job.Status == JobStatus.Waiting ? stored : null;
     }
 
     public override async Task RequeueJobAsync<T>(T job)
@@ -319,6 +661,8 @@ public class RedisJobContext : JobContextBase
         // Atomically move the job back onto the Queued list and drop the in-flight marker.
         var transaction = _db!.CreateTransaction();
         _ = transaction.StringSetAsync(queuedKey, SerializeJob(job));
+        if (IsGraphJob(job))
+            _ = transaction.StringSetAsync(JobIndexKey(job.Id), queuedKey);
         _ = transaction.ListRightPushAsync(QueueKey(JobStatus.Queued), queuedKey);
         if (fromKey != queuedKey)
         {
@@ -393,5 +737,39 @@ public class RedisJobContext : JobContextBase
         }
 
         return recovered;
+    }
+
+    private async Task<RedisGraphLock> AcquireGraphMutationLockAsync()
+    {
+        EnsureInitialized();
+        var token = Guid.NewGuid().ToString("N");
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (await _db!.LockTakeAsync(GraphMutationLockKey(), token, TimeSpan.FromMinutes(1)))
+                return new RedisGraphLock(_db, GraphMutationLockKey(), token);
+
+            await Task.Delay(20);
+        }
+
+        throw new TimeoutException("Timed out waiting for the job graph mutation lock.");
+    }
+
+    private sealed record StoredJob(Job Job, string Key);
+    private sealed record PendingJobTransition(
+        Job Job,
+        string WaitingKey,
+        JobStatus Status,
+        string NewKey);
+
+    private sealed class RedisGraphLock(
+        IDatabase database,
+        RedisKey key,
+        RedisValue token) : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            await database.LockReleaseAsync(key, token);
+        }
     }
 }

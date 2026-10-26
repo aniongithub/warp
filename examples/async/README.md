@@ -107,3 +107,32 @@ Routes:
 - **OpenTelemetry**: This sample also shows how to easily enable OpenTelemetry to get end-to-end traces, even across Warp and Warp.Plasma
 
 This shows how Warp Gateway can transform any synchronous API into a modern asynchronous system with minimal configuration.
+
+## Job Dependency Graphs
+
+Jobs may also be submitted as a small outcome-driven graph:
+
+```csharp
+var graph = jobContext.CreateGraph();
+var first = graph.Add();
+var next = first.OnSuccess();
+var recovery = first.OnFailure();
+var final = next.OnCompletion();
+recovery.OnCompletion(final);
+
+await jobContext.EnqueueAsync(graph);
+```
+
+`OnSuccess`, `OnFailure`, and `OnCompletion` are persisted as job IDs. Jobs with
+unresolved incoming callbacks remain `Waiting`; unselected branches become `Skipped`.
+The graph must be acyclic and have one top-level job with no outgoing callbacks.
+
+The regular case remains unchanged:
+
+```csharp
+var job = jobContext.CreateJob();
+await jobContext.EnqueueAsync(job);
+```
+
+Standalone jobs continue through the existing direct `Queued` path without graph
+resolution or locking.

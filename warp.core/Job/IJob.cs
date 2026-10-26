@@ -4,6 +4,13 @@ namespace Warp.Core.Job;
 
 public interface IJob : IEntity
 {
+    // Durable graph identity. Standalone jobs use their own Id as RootJobId.
+    string RootJobId { get; set; }
+    // Outgoing graph edges selected by this job's terminal outcome.
+    List<string> OnSuccess { get; set; }
+    List<string> OnFailure { get; set; }
+    List<string> OnCompletion { get; set; }
+
     JobStatus Status { get; set; } // Current status of the job
     IUser? User { get; set; } // The user who submitted the job
     DateTime QueuedAt { get; set; } // When the job was queued
