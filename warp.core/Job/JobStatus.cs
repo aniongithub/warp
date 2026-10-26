@@ -7,5 +7,6 @@ public enum JobStatus
     Completed = 2,
     Failed = 3,
     Canceled = 4,
-    Waiting = 5
+    Waiting = 5,
+    Skipped = 6
 }

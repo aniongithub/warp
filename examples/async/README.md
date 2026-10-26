@@ -110,14 +110,29 @@ This shows how Warp Gateway can transform any synchronous API into a modern asyn
 
 ## Job Dependency Graphs
 
-Jobs may also be submitted as a dependency graph through `IJobContext.EnqueueJobsAsync`.
-Each graph has one top-level job, identified by `RootJobId`, and each job lists the IDs
-that must complete successfully in `DependsOn`.
+Jobs may also be submitted as a small outcome-driven graph:
 
-Jobs with unresolved dependencies are persisted as `Waiting` and are not placed on the
-ready queue. Completing a dependency atomically unlocks any jobs whose remaining
-dependencies reached zero. Failing or cancelling a dependency fails its waiting
-descendants.
+```csharp
+var graph = jobContext.CreateGraph();
+var first = graph.Add();
+var next = first.OnSuccess();
+var recovery = first.OnFailure();
+var final = next.OnCompletion();
+recovery.OnCompletion(final);
 
-Jobs without dependencies continue through the existing direct `Queued` path and do not
-perform graph resolution or locking.
+await jobContext.EnqueueAsync(graph);
+```
+
+`OnSuccess`, `OnFailure`, and `OnCompletion` are persisted as job IDs. Jobs with
+unresolved incoming callbacks remain `Waiting`; unselected branches become `Skipped`.
+The graph must be acyclic and have one top-level job with no outgoing callbacks.
+
+The regular case remains unchanged:
+
+```csharp
+var job = jobContext.CreateJob();
+await jobContext.EnqueueAsync(job);
+```
+
+Standalone jobs continue through the existing direct `Queued` path without graph
+resolution or locking.

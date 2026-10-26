@@ -4,12 +4,12 @@ namespace Warp.Core.Job;
 
 public interface IJob : IEntity
 {
-    // Durable DAG identity. Standalone jobs use their own Id as RootJobId.
+    // Durable graph identity. Standalone jobs use their own Id as RootJobId.
     string RootJobId { get; set; }
-    // Jobs that must complete successfully before this job can enter the ready queue.
-    List<string> DependsOn { get; set; }
-    // Reverse edges materialized when a graph is enqueued, used to unlock/fail descendants.
-    List<string> Dependents { get; set; }
+    // Outgoing graph edges selected by this job's terminal outcome.
+    List<string> OnSuccess { get; set; }
+    List<string> OnFailure { get; set; }
+    List<string> OnCompletion { get; set; }
 
     JobStatus Status { get; set; } // Current status of the job
     IUser? User { get; set; } // The user who submitted the job

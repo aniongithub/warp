@@ -44,133 +44,110 @@ public class RedisJobContext : JobContextBase
 
     public override IJob CreateJob() => new Job();
 
-    public override async Task EnqueueJobAsync<T>(T job)
+    public override Task EnqueueJobAsync<T>(T job) => EnqueueAsync(job);
+
+    public override async Task EnqueueAsync(IJob job)
     {
         ArgumentNullException.ThrowIfNull(job);
-        if (job.DependsOn.Count == 0 && job.Dependents.Count == 0)
-        {
-            job.RootJobId = string.IsNullOrWhiteSpace(job.RootJobId) ? job.Id : job.RootJobId;
-            if (!StringComparer.Ordinal.Equals(job.RootJobId, job.Id))
-                throw new ArgumentException("A standalone job must use its own id as RootJobId.", nameof(job));
+        if (HasOutgoingEdges(job))
+            throw new ArgumentException("Jobs with outcome callbacks must be submitted as a graph.", nameof(job));
 
-            await EnqueueIndependentJobAsync(job);
-            return;
-        }
+        job.RootJobId = string.IsNullOrWhiteSpace(job.RootJobId) ? job.Id : job.RootJobId;
+        if (!StringComparer.Ordinal.Equals(job.RootJobId, job.Id))
+            throw new ArgumentException("A standalone job must use its own id as RootJobId.", nameof(job));
 
-        await EnqueueJobsAsync([job]);
+        await EnqueueIndependentJobAsync(job);
     }
 
-    public override async Task EnqueueJobsAsync<T>(IReadOnlyCollection<T> jobs)
+    public override async Task EnqueueAsync(IJobGraph jobGraph)
     {
         EnsureInitialized();
-        ArgumentNullException.ThrowIfNull(jobs);
+        ArgumentNullException.ThrowIfNull(jobGraph);
+        var jobs = jobGraph.Jobs;
         if (jobs.Count == 0)
-            throw new ArgumentException("At least one job is required.", nameof(jobs));
-        if (jobs.Count == 1 && jobs.First().DependsOn.Count == 0 && jobs.First().Dependents.Count == 0)
+            throw new ArgumentException("At least one job is required.", nameof(jobGraph));
+        if (jobs.Count == 1 && !HasOutgoingEdges(jobs.First()))
         {
-            await EnqueueJobAsync(jobs.First());
+            await EnqueueAsync(jobs.First());
             return;
         }
 
         await using var graphLock = await AcquireGraphMutationLockAsync();
         var graph = jobs.ToDictionary(job => job.Id, StringComparer.Ordinal);
         if (graph.Count != jobs.Count)
-            throw new ArgumentException("Job ids must be unique within a graph.", nameof(jobs));
+            throw new ArgumentException("Job ids must be unique within a graph.", nameof(jobGraph));
 
+        var incoming = jobs.ToDictionary(job => job.Id, _ => 0, StringComparer.Ordinal);
         foreach (var job in jobs)
         {
             if (string.IsNullOrWhiteSpace(job.Id))
-                throw new ArgumentException("Job id is required.", nameof(jobs));
+                throw new ArgumentException("Job id is required.", nameof(jobGraph));
             if (string.IsNullOrWhiteSpace(job.User?.Id))
-                throw new ArgumentException($"User.Id is required for job {job.Id}.", nameof(jobs));
-            if (job.DependsOn.Any(id => StringComparer.Ordinal.Equals(id, job.Id)))
-                throw new ArgumentException($"Job {job.Id} cannot depend on itself.", nameof(jobs));
-            job.DependsOn = job.DependsOn
-                .Where(id => !string.IsNullOrWhiteSpace(id))
-                .Distinct(StringComparer.Ordinal)
-                .ToList();
-            job.Dependents.Clear();
-
+                throw new ArgumentException($"User.Id is required for job {job.Id}.", nameof(jobGraph));
             if (await FindStoredJobAsync(job.Id) is not null)
                 throw new InvalidOperationException($"Job {job.Id} already exists.");
+
+            NormalizeEdges(job.OnSuccess);
+            NormalizeEdges(job.OnFailure);
+            NormalizeEdges(job.OnCompletion);
+            var targets = job.OnSuccess
+                .Concat(job.OnFailure)
+                .Concat(job.OnCompletion)
+                .ToArray();
+            if (targets.Length != targets.Distinct(StringComparer.Ordinal).Count())
+            {
+                throw new ArgumentException(
+                    $"Job {job.Id} cannot target the same job for multiple outcomes.",
+                    nameof(jobGraph));
+            }
+
+            foreach (var targetId in targets)
+            {
+                if (StringComparer.Ordinal.Equals(targetId, job.Id))
+                    throw new ArgumentException($"Job {job.Id} cannot target itself.", nameof(jobGraph));
+                if (!graph.ContainsKey(targetId))
+                    throw new ArgumentException(
+                        $"Job {job.Id} targets {targetId}, which is not part of the graph.",
+                        nameof(jobGraph));
+                incoming[targetId]++;
+            }
         }
 
         ValidateAcyclicGraph(graph);
-
-        foreach (var dependencyId in jobs.SelectMany(job => job.DependsOn).Distinct(StringComparer.Ordinal))
-        {
-            if (graph.TryGetValue(dependencyId, out var dependency))
-            {
-                dependency.Dependents.AddRange(
-                    jobs.Where(job => job.DependsOn.Contains(dependencyId, StringComparer.Ordinal))
-                        .Select(job => job.Id));
-                continue;
-            }
-
-            var stored = await FindStoredJobAsync(dependencyId)
-                ?? throw new InvalidOperationException($"Dependency job {dependencyId} does not exist.");
-            if (stored.Job.Status != JobStatus.Completed)
-            {
-                throw new InvalidOperationException(
-                    $"Dependency job {dependencyId} must be included in the graph unless it is already completed.");
-            }
-        }
-
-        var configuredRoots = jobs
-            .Select(job => job.RootJobId)
-            .Where(rootId => !string.IsNullOrWhiteSpace(rootId))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        if (configuredRoots.Length > 1)
-            throw new ArgumentException("All jobs in a graph must use the same RootJobId.", nameof(jobs));
-
-        var sinks = jobs.Where(job => job.Dependents.Count == 0).ToArray();
+        var sinks = jobs.Where(job => !HasOutgoingEdges(job)).ToArray();
         if (sinks.Length != 1)
         {
             throw new ArgumentException(
-                "A job graph must have exactly one top-level job that depends on every terminal branch.",
-                nameof(jobs));
+                "A job graph must have exactly one top-level job with no outgoing callbacks.",
+                nameof(jobGraph));
         }
 
         var rootJobId = sinks[0].Id;
-        if (configuredRoots.Length == 1 &&
-            !StringComparer.Ordinal.Equals(configuredRoots[0], rootJobId))
-        {
-            throw new ArgumentException(
-                "RootJobId must identify the graph's single top-level job.",
-                nameof(jobs));
-        }
-
         foreach (var job in jobs)
         {
             if (!string.IsNullOrWhiteSpace(job.RootJobId) &&
                 !StringComparer.Ordinal.Equals(job.RootJobId, rootJobId))
             {
-                throw new ArgumentException($"Job {job.Id} belongs to a different root.", nameof(jobs));
+                throw new ArgumentException($"Job {job.Id} belongs to a different root.", nameof(jobGraph));
             }
 
             job.RootJobId = rootJobId;
             job.QueuedAt = DateTime.UtcNow;
             job.StartedAt = null;
             job.EndedAt = null;
-
-            var unresolved = job.DependsOn.Count(dependencyId => graph.ContainsKey(dependencyId));
-            job.Status = unresolved == 0 ? JobStatus.Queued : JobStatus.Waiting;
+            job.Status = incoming[job.Id] == 0 ? JobStatus.Queued : JobStatus.Waiting;
         }
 
         var transaction = _db!.CreateTransaction();
         foreach (var job in jobs)
         {
             transaction.AddCondition(Condition.KeyNotExists(JobIndexKey(job.Id)));
-            var userId = job.User!.Id;
-            var key = JobKey(job.Id, job.Status, userId);
+            var key = JobKey(job.Id, job.Status, job.User!.Id);
             _ = transaction.StringSetAsync(key, SerializeJob(job));
             _ = transaction.StringSetAsync(JobIndexKey(job.Id), key);
             _ = transaction.ListRightPushAsync(QueueKey(job.Status), key);
-
-            var unresolved = job.DependsOn.Count(dependencyId => graph.ContainsKey(dependencyId));
-            if (unresolved > 0)
-                _ = transaction.StringSetAsync(RemainingDependenciesKey(job.Id), unresolved);
+            if (incoming[job.Id] > 0)
+                _ = transaction.StringSetAsync(RemainingDependenciesKey(job.Id), incoming[job.Id]);
         }
 
         if (!await transaction.ExecuteAsync())
@@ -192,24 +169,36 @@ public class RedisJobContext : JobContextBase
         await _db.ListRightPushAsync(QueueKey(JobStatus.Queued), key);
     }
 
-    private static void ValidateAcyclicGraph<T>(IReadOnlyDictionary<string, T> graph)
-        where T : class, IJob
+    private static void NormalizeEdges(List<string> edges)
     {
-        var inDegree = graph.ToDictionary(
-            pair => pair.Key,
-            pair => pair.Value.DependsOn.Count(graph.ContainsKey),
-            StringComparer.Ordinal);
+        var normalized = edges
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        edges.Clear();
+        edges.AddRange(normalized);
+    }
+
+    private static void ValidateAcyclicGraph(IReadOnlyDictionary<string, IJob> graph)
+    {
+        var inDegree = graph.Keys.ToDictionary(id => id, _ => 0, StringComparer.Ordinal);
+        foreach (var job in graph.Values)
+        {
+            foreach (var targetId in AllTargets(job))
+                inDegree[targetId]++;
+        }
+
         var ready = new Queue<string>(inDegree.Where(pair => pair.Value == 0).Select(pair => pair.Key));
         var visited = 0;
 
         while (ready.TryDequeue(out var id))
         {
             visited++;
-            foreach (var dependent in graph.Values.Where(job => job.DependsOn.Contains(id, StringComparer.Ordinal)))
+            foreach (var targetId in AllTargets(graph[id]))
             {
-                inDegree[dependent.Id]--;
-                if (inDegree[dependent.Id] == 0)
-                    ready.Enqueue(dependent.Id);
+                inDegree[targetId]--;
+                if (inDegree[targetId] == 0)
+                    ready.Enqueue(targetId);
             }
         }
 
@@ -432,8 +421,12 @@ public class RedisJobContext : JobContextBase
             return false;
         }
 
-        var terminal = toStatus is JobStatus.Completed or JobStatus.Failed or JobStatus.Canceled;
-        if (!terminal || job.Dependents.Count == 0)
+        var terminal = toStatus is
+            JobStatus.Completed or
+            JobStatus.Failed or
+            JobStatus.Canceled or
+            JobStatus.Skipped;
+        if (!terminal || !HasOutgoingEdges(job))
             return await TransitionSingleJobAsync(job, fromStatus, toStatus, error, output);
 
         await using var graphLock = await AcquireGraphMutationLockAsync();
@@ -470,60 +463,73 @@ public class RedisJobContext : JobContextBase
         var toKey = JobKey(job.Id, toStatus, userId);
         ApplyTransition(job, toStatus, error, output);
 
-        var ready = new List<(Job Job, string WaitingKey, string QueuedKey)>();
-        var failed = new List<(Job Job, string WaitingKey, string FailedKey)>();
-        var decrements = new List<string>();
+        var resolutions = new Queue<(IJob Source, JobStatus Status)>();
+        resolutions.Enqueue((job, toStatus));
+        var storedJobs = new Dictionary<string, StoredJob>(StringComparer.Ordinal);
+        var remaining = new Dictionary<string, long>(StringComparer.Ordinal);
+        var transitions = new Dictionary<string, PendingJobTransition>(StringComparer.Ordinal);
 
-        if (toStatus == JobStatus.Completed)
+        while (resolutions.TryDequeue(out var resolution))
         {
-            foreach (var dependentId in job.Dependents.Distinct(StringComparer.Ordinal))
+            foreach (var targetId in UnselectedTargets(resolution.Source, resolution.Status))
             {
-                var stored = await FindStoredJobAsync(dependentId);
-                if (stored?.Job.Status != JobStatus.Waiting)
+                if (transitions.TryGetValue(targetId, out var existing) &&
+                    existing.Status == JobStatus.Skipped)
+                {
+                    continue;
+                }
+
+                var stored = await GetWaitingJobAsync(targetId, storedJobs);
+                if (stored is null)
                     continue;
 
-                var remainingValue = await _db!.StringGetAsync(RemainingDependenciesKey(dependentId));
-                var remaining = remainingValue.HasValue ? (long)remainingValue : 0;
-                if (remaining <= 1)
+                var skipped = stored.Job;
+                skipped.Status = JobStatus.Skipped;
+                skipped.EndedAt = DateTime.UtcNow;
+                skipped.Error = $"Callback condition from {resolution.Source.Id} was not selected.";
+                var transition = new PendingJobTransition(
+                    skipped,
+                    stored.Key,
+                    JobStatus.Skipped,
+                    JobKey(skipped.Id, JobStatus.Skipped, skipped.User!.Id));
+                transitions[targetId] = transition;
+                remaining.Remove(targetId);
+                resolutions.Enqueue((skipped, JobStatus.Skipped));
+            }
+
+            foreach (var targetId in SelectedTargets(resolution.Source, resolution.Status))
+            {
+                if (transitions.ContainsKey(targetId))
+                    continue;
+
+                var stored = await GetWaitingJobAsync(targetId, storedJobs);
+                if (stored is null)
+                    continue;
+
+                if (!remaining.TryGetValue(targetId, out var count))
                 {
-                    var dependent = stored.Job;
-                    dependent.Status = JobStatus.Queued;
-                    dependent.StartedAt = null;
-                    dependent.EndedAt = null;
-                    ready.Add((
-                        dependent,
+                    var value = await _db!.StringGetAsync(RemainingDependenciesKey(targetId));
+                    count = value.HasValue ? (long)value : 0;
+                }
+
+                count--;
+                if (count <= 0)
+                {
+                    var ready = stored.Job;
+                    ready.Status = JobStatus.Queued;
+                    ready.StartedAt = null;
+                    ready.EndedAt = null;
+                    transitions[targetId] = new PendingJobTransition(
+                        ready,
                         stored.Key,
-                        JobKey(dependent.Id, JobStatus.Queued, dependent.User!.Id)));
+                        JobStatus.Queued,
+                        JobKey(ready.Id, JobStatus.Queued, ready.User!.Id));
+                    remaining.Remove(targetId);
                 }
                 else
                 {
-                    decrements.Add(dependentId);
+                    remaining[targetId] = count;
                 }
-            }
-        }
-        else
-        {
-            var pending = new Queue<string>(job.Dependents.Distinct(StringComparer.Ordinal));
-            var visited = new HashSet<string>(StringComparer.Ordinal);
-            while (pending.TryDequeue(out var dependentId))
-            {
-                if (!visited.Add(dependentId))
-                    continue;
-
-                var stored = await FindStoredJobAsync(dependentId);
-                if (stored?.Job.Status != JobStatus.Waiting)
-                    continue;
-
-                var dependent = stored.Job;
-                dependent.Status = JobStatus.Failed;
-                dependent.EndedAt = DateTime.UtcNow;
-                dependent.Error = $"Dependency {job.Id} ended as {toStatus}.";
-                failed.Add((
-                    dependent,
-                    stored.Key,
-                    JobKey(dependent.Id, JobStatus.Failed, dependent.User!.Id)));
-                foreach (var descendantId in dependent.Dependents)
-                    pending.Enqueue(descendantId);
             }
         }
 
@@ -531,26 +537,15 @@ public class RedisJobContext : JobContextBase
         transaction.AddCondition(Condition.KeyExists(fromKey));
         QueueTransition(transaction, job, fromStatus, fromKey, toStatus, toKey);
 
-        foreach (var dependentId in decrements)
-            _ = transaction.StringDecrementAsync(RemainingDependenciesKey(dependentId));
+        foreach (var pair in remaining)
+            _ = transaction.StringSetAsync(RemainingDependenciesKey(pair.Key), pair.Value);
 
-        foreach (var change in ready)
+        foreach (var change in transitions.Values)
         {
             transaction.AddCondition(Condition.KeyExists(change.WaitingKey));
-            _ = transaction.StringSetAsync(change.QueuedKey, SerializeJob(change.Job));
-            _ = transaction.StringSetAsync(JobIndexKey(change.Job.Id), change.QueuedKey);
-            _ = transaction.ListRightPushAsync(QueueKey(JobStatus.Queued), change.QueuedKey);
-            _ = transaction.KeyDeleteAsync(change.WaitingKey);
-            _ = transaction.ListRemoveAsync(QueueKey(JobStatus.Waiting), change.WaitingKey);
-            _ = transaction.KeyDeleteAsync(RemainingDependenciesKey(change.Job.Id));
-        }
-
-        foreach (var change in failed)
-        {
-            transaction.AddCondition(Condition.KeyExists(change.WaitingKey));
-            _ = transaction.StringSetAsync(change.FailedKey, SerializeJob(change.Job));
-            _ = transaction.StringSetAsync(JobIndexKey(change.Job.Id), change.FailedKey);
-            _ = transaction.ListRightPushAsync(QueueKey(JobStatus.Failed), change.FailedKey);
+            _ = transaction.StringSetAsync(change.NewKey, SerializeJob(change.Job));
+            _ = transaction.StringSetAsync(JobIndexKey(change.Job.Id), change.NewKey);
+            _ = transaction.ListRightPushAsync(QueueKey(change.Status), change.NewKey);
             _ = transaction.KeyDeleteAsync(change.WaitingKey);
             _ = transaction.ListRemoveAsync(QueueKey(JobStatus.Waiting), change.WaitingKey);
             _ = transaction.KeyDeleteAsync(RemainingDependenciesKey(change.Job.Id));
@@ -583,7 +578,11 @@ public class RedisJobContext : JobContextBase
         string? output)
     {
         job.Status = toStatus;
-        job.EndedAt = toStatus is JobStatus.Completed or JobStatus.Failed or JobStatus.Canceled
+        job.EndedAt = toStatus is
+            JobStatus.Completed or
+            JobStatus.Failed or
+            JobStatus.Canceled or
+            JobStatus.Skipped
             ? DateTime.UtcNow
             : null;
         if (!string.IsNullOrEmpty(error))
@@ -593,7 +592,56 @@ public class RedisJobContext : JobContextBase
     }
 
     private static bool IsGraphJob(IJob job) =>
-        job.DependsOn.Count > 0 || job.Dependents.Count > 0;
+        HasOutgoingEdges(job) || !StringComparer.Ordinal.Equals(job.RootJobId, job.Id);
+
+    private static bool HasOutgoingEdges(IJob job) =>
+        job.OnSuccess.Count > 0 ||
+        job.OnFailure.Count > 0 ||
+        job.OnCompletion.Count > 0;
+
+    private static IEnumerable<string> AllTargets(IJob job) =>
+        job.OnSuccess
+            .Concat(job.OnFailure)
+            .Concat(job.OnCompletion)
+            .Distinct(StringComparer.Ordinal);
+
+    private static IEnumerable<string> SelectedTargets(IJob job, JobStatus status)
+    {
+        var outcomeTargets = status switch
+        {
+            JobStatus.Completed => job.OnSuccess,
+            JobStatus.Failed or JobStatus.Canceled => job.OnFailure,
+            JobStatus.Skipped => [],
+            _ => []
+        };
+        return outcomeTargets
+            .Concat(job.OnCompletion)
+            .Distinct(StringComparer.Ordinal);
+    }
+
+    private static IEnumerable<string> UnselectedTargets(IJob job, JobStatus status) =>
+        status switch
+        {
+            JobStatus.Completed => job.OnFailure,
+            JobStatus.Failed or JobStatus.Canceled => job.OnSuccess,
+            JobStatus.Skipped => job.OnSuccess.Concat(job.OnFailure).Distinct(StringComparer.Ordinal),
+            _ => []
+        };
+
+    private async Task<StoredJob?> GetWaitingJobAsync(
+        string id,
+        IDictionary<string, StoredJob> cache)
+    {
+        if (!cache.TryGetValue(id, out var stored))
+        {
+            stored = await FindStoredJobAsync(id);
+            if (stored is null)
+                return null;
+            cache[id] = stored;
+        }
+
+        return stored.Job.Status == JobStatus.Waiting ? stored : null;
+    }
 
     public override async Task RequeueJobAsync<T>(T job)
     {
@@ -708,6 +756,11 @@ public class RedisJobContext : JobContextBase
     }
 
     private sealed record StoredJob(Job Job, string Key);
+    private sealed record PendingJobTransition(
+        Job Job,
+        string WaitingKey,
+        JobStatus Status,
+        string NewKey);
 
     private sealed class RedisGraphLock(
         IDatabase database,
