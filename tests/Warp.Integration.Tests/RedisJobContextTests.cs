@@ -14,21 +14,31 @@ namespace Warp.Integration.Tests;
 /// </summary>
 public sealed class RedisJobContextTests : IAsyncLifetime
 {
-    private readonly RedisContainer _redis = new RedisBuilder()
-        .WithImage("redis:7-alpine")
-        .Build();
-
+    private RedisContainer? _redis;
     private RedisJobContext _ctx = null!;
     private const string Channel = "test";
 
     public async Task InitializeAsync()
     {
-        await _redis.StartAsync();
+        var connectionString = Environment.GetEnvironmentVariable("WARP_TEST_REDIS_CONNECTION");
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            _redis = new RedisBuilder()
+                .WithImage("redis:7-alpine")
+                .Build();
+            await _redis.StartAsync();
+            connectionString = _redis.GetConnectionString();
+        }
+
         _ctx = new RedisJobContext();
-        _ctx.Initialize(_redis.GetConnectionString(), Channel);
+        _ctx.Initialize(connectionString, $"{Channel}-{Guid.NewGuid():N}");
     }
 
-    public async Task DisposeAsync() => await _redis.DisposeAsync();
+    public async Task DisposeAsync()
+    {
+        if (_redis is not null)
+            await _redis.DisposeAsync();
+    }
 
     private static Job NewJob(out string userId)
     {
@@ -36,6 +46,16 @@ public sealed class RedisJobContextTests : IAsyncLifetime
         var user = new SqliteDataContext.User { Id = userId, Email = "j@warp.test" };
         return new Job { Id = $"job-{Guid.NewGuid():N}", User = user, Status = JobStatus.Queued };
     }
+
+    private static Job GraphJob(
+        SqliteDataContext.User user,
+        string id,
+        params string[] dependsOn) => new()
+    {
+        Id = id,
+        User = user,
+        DependsOn = dependsOn.ToList()
+    };
 
     [Fact]
     public async Task Enqueue_then_dequeue_transitions_to_running_via_reliable_queue()
@@ -48,7 +68,177 @@ public sealed class RedisJobContextTests : IAsyncLifetime
         dequeued.HasJob.Should().BeTrue("the enqueued job must be reliably claimed");
         dequeued.Job!.Id.Should().Be(job.Id);
         dequeued.Job.Status.Should().Be(JobStatus.Running, "dequeue moves the job Queued -> Running");
+        dequeued.Job.RootJobId.Should().Be(job.Id, "standalone jobs are their own graph root");
         (await _ctx.GetJobStatusAsync(job.Id, userId)).Should().Be(JobStatus.Running);
+    }
+
+    [Fact]
+    public async Task Graph_unlocks_only_jobs_whose_dependencies_completed()
+    {
+        var user = new SqliteDataContext.User
+        {
+            Id = $"user-{Guid.NewGuid():N}",
+            Email = "dag@warp.test"
+        };
+        var first = GraphJob(user, "first");
+        var left = GraphJob(user, "left", first.Id);
+        var right = GraphJob(user, "right", first.Id);
+        var final = GraphJob(user, "final", left.Id, right.Id);
+
+        await _ctx.EnqueueJobsAsync([first, left, right, final]);
+
+        first.RootJobId.Should().Be(final.Id);
+        left.RootJobId.Should().Be(final.Id);
+        right.RootJobId.Should().Be(final.Id);
+        final.RootJobId.Should().Be(final.Id);
+        (await _ctx.GetJobStatusAsync(first.Id, user.Id)).Should().Be(JobStatus.Queued);
+        (await _ctx.GetJobStatusAsync(left.Id, user.Id)).Should().Be(JobStatus.Waiting);
+        (await _ctx.GetJobStatusAsync(right.Id, user.Id)).Should().Be(JobStatus.Waiting);
+        (await _ctx.GetJobStatusAsync(final.Id, user.Id)).Should().Be(JobStatus.Waiting);
+        (await _ctx.UpdateJobStatusAsync(
+            left.Id,
+            JobStatus.Waiting,
+            JobStatus.Running,
+            user.Id)).Should().BeFalse("waiting jobs can only be unlocked by their dependencies");
+
+        var claimedFirst = await _ctx.DequeueJobAsync<Job>();
+        claimedFirst.Job!.Id.Should().Be(first.Id);
+        await _ctx.UpdateJobStatusAsync(first.Id, JobStatus.Running, JobStatus.Completed, user.Id);
+
+        var unlocked = new[]
+        {
+            (await _ctx.DequeueJobAsync<Job>()).Job!,
+            (await _ctx.DequeueJobAsync<Job>()).Job!
+        };
+        unlocked.Select(job => job.Id).Should().BeEquivalentTo([left.Id, right.Id]);
+        (await _ctx.GetJobStatusAsync(final.Id, user.Id)).Should().Be(JobStatus.Waiting);
+
+        await _ctx.UpdateJobStatusAsync(unlocked[0].Id, JobStatus.Running, JobStatus.Completed, user.Id);
+        (await _ctx.GetJobStatusAsync(final.Id, user.Id)).Should().Be(JobStatus.Waiting);
+        await _ctx.UpdateJobStatusAsync(unlocked[1].Id, JobStatus.Running, JobStatus.Completed, user.Id);
+
+        var claimedFinal = await _ctx.DequeueJobAsync<Job>();
+        claimedFinal.Job!.Id.Should().Be(final.Id);
+    }
+
+    [Fact]
+    public async Task Graph_rejects_cycles_before_any_job_is_visible()
+    {
+        var user = new SqliteDataContext.User
+        {
+            Id = $"user-{Guid.NewGuid():N}",
+            Email = "cycle@warp.test"
+        };
+        var first = GraphJob(user, "cycle-a", "cycle-b");
+        var second = GraphJob(user, "cycle-b", "cycle-a");
+        first.RootJobId = first.Id;
+        second.RootJobId = first.Id;
+
+        var action = () => _ctx.EnqueueJobsAsync([first, second]);
+
+        await action.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*acyclic*");
+        var dequeue = await _ctx.DequeueJobAsync<Job>();
+        dequeue.HasJob.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Graph_requires_one_top_level_job()
+    {
+        var user = new SqliteDataContext.User
+        {
+            Id = $"user-{Guid.NewGuid():N}",
+            Email = "roots@warp.test"
+        };
+        var first = GraphJob(user, "root-a");
+        var second = GraphJob(user, "root-b");
+
+        var action = () => _ctx.EnqueueJobsAsync([first, second]);
+
+        await action.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*exactly one top-level job*");
+    }
+
+    [Fact]
+    public async Task Job_can_depend_on_an_existing_completed_job()
+    {
+        var user = new SqliteDataContext.User
+        {
+            Id = $"user-{Guid.NewGuid():N}",
+            Email = "existing@warp.test"
+        };
+        var dependency = GraphJob(user, "existing-dependency");
+        await _ctx.EnqueueJobAsync(dependency);
+        _ = await _ctx.DequeueJobAsync<Job>();
+        await _ctx.UpdateJobStatusAsync(
+            dependency.Id,
+            JobStatus.Running,
+            JobStatus.Completed,
+            user.Id);
+
+        var dependent = GraphJob(user, "existing-dependent", dependency.Id);
+        await _ctx.EnqueueJobAsync(dependent);
+
+        (await _ctx.GetJobStatusAsync(dependent.Id, user.Id)).Should().Be(JobStatus.Queued);
+        (await _ctx.DequeueJobAsync<Job>()).Job!.Id.Should().Be(dependent.Id);
+    }
+
+    [Fact]
+    public async Task Failed_dependency_fails_all_waiting_descendants()
+    {
+        var user = new SqliteDataContext.User
+        {
+            Id = $"user-{Guid.NewGuid():N}",
+            Email = "failure@warp.test"
+        };
+        var first = GraphJob(user, "failure-a");
+        var second = GraphJob(user, "failure-b", first.Id);
+        var third = GraphJob(user, "failure-c", second.Id);
+
+        await _ctx.EnqueueJobsAsync([first, second, third]);
+        var claimed = await _ctx.DequeueJobAsync<Job>();
+        claimed.Job!.Id.Should().Be(first.Id);
+
+        var failed = await _ctx.UpdateJobStatusAsync(
+            first.Id,
+            JobStatus.Running,
+            JobStatus.Failed,
+            user.Id,
+            error: "first failed");
+
+        failed.Should().BeTrue();
+        (await _ctx.GetJobStatusAsync(second.Id, user.Id)).Should().Be(JobStatus.Failed);
+        (await _ctx.GetJobStatusAsync(third.Id, user.Id)).Should().Be(JobStatus.Failed);
+        (await _ctx.DequeueJobAsync<Job>()).HasJob.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Duplicate_completion_does_not_unlock_a_dependent_twice()
+    {
+        var user = new SqliteDataContext.User
+        {
+            Id = $"user-{Guid.NewGuid():N}",
+            Email = "duplicate@warp.test"
+        };
+        var first = GraphJob(user, "duplicate-a");
+        var second = GraphJob(user, "duplicate-b", first.Id);
+
+        await _ctx.EnqueueJobsAsync([first, second]);
+        _ = await _ctx.DequeueJobAsync<Job>();
+
+        (await _ctx.UpdateJobStatusAsync(
+            first.Id,
+            JobStatus.Running,
+            JobStatus.Completed,
+            user.Id)).Should().BeTrue();
+        (await _ctx.UpdateJobStatusAsync(
+            first.Id,
+            JobStatus.Running,
+            JobStatus.Completed,
+            user.Id)).Should().BeFalse();
+
+        (await _ctx.DequeueJobAsync<Job>()).Job!.Id.Should().Be(second.Id);
+        (await _ctx.DequeueJobAsync<Job>()).HasJob.Should().BeFalse();
     }
 
     [Fact]

@@ -5,6 +5,9 @@ namespace Warp.Core.Job;
 public class Job : IJob
 {    
     public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string RootJobId { get; set; } = string.Empty;
+    public List<string> DependsOn { get; set; } = new();
+    public List<string> Dependents { get; set; } = new();
     public JobStatus Status { get; set; } = JobStatus.Queued;
     public IUser? User { get; set; } = null;
     public DateTime QueuedAt { get; set; } = DateTime.UtcNow;

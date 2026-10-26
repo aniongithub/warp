@@ -19,6 +19,9 @@ public interface IJobContext
     void Initialize(string connectionString, string channel);
     IJob CreateJob();
     Task EnqueueJobAsync<T>(T job) where T : class, IJob;
+    // Atomically validates and persists a complete dependency graph. Only jobs with no unresolved
+    // dependencies enter the ready queue; the graph must have one top-level job.
+    Task EnqueueJobsAsync<T>(IReadOnlyCollection<T> jobs) where T : class, IJob;
     Task<DequeueResult<T>> DequeueJobAsync<T>() where T : class, IJob;
     Task<T> LookupJobAsync<T>(string id, JobStatus status, string userId) where T : class, IJob;
     Task<JobStatus> GetJobStatusAsync(string id, string userId);

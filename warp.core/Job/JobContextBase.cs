@@ -38,6 +38,7 @@ public abstract class JobContextBase : IJobContext
     public abstract void Initialize(string connectionString, string channel);
     public abstract IJob CreateJob();
     public abstract Task EnqueueJobAsync<T>(T job) where T : class, IJob;
+    public abstract Task EnqueueJobsAsync<T>(IReadOnlyCollection<T> jobs) where T : class, IJob;
     public abstract Task<DequeueResult<T>> DequeueJobAsync<T>() where T : class, IJob;
     public abstract Task<T> LookupJobAsync<T>(string id, JobStatus status, string userId) where T : class, IJob;
     public abstract Task<JobStatus> GetJobStatusAsync(string id, string userId);

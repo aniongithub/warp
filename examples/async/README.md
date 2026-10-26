@@ -107,3 +107,17 @@ Routes:
 - **OpenTelemetry**: This sample also shows how to easily enable OpenTelemetry to get end-to-end traces, even across Warp and Warp.Plasma
 
 This shows how Warp Gateway can transform any synchronous API into a modern asynchronous system with minimal configuration.
+
+## Job Dependency Graphs
+
+Jobs may also be submitted as a dependency graph through `IJobContext.EnqueueJobsAsync`.
+Each graph has one top-level job, identified by `RootJobId`, and each job lists the IDs
+that must complete successfully in `DependsOn`.
+
+Jobs with unresolved dependencies are persisted as `Waiting` and are not placed on the
+ready queue. Completing a dependency atomically unlocks any jobs whose remaining
+dependencies reached zero. Failing or cancelling a dependency fails its waiting
+descendants.
+
+Jobs without dependencies continue through the existing direct `Queued` path and do not
+perform graph resolution or locking.
