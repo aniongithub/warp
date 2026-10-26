@@ -25,8 +25,8 @@ public sealed class SqliteJournalStore : IJournalStore
         JournalAppend append,
         CancellationToken cancellationToken = default)
     {
-        var entries = JournalStoreSupport.ValidateAppend(append);
-        var fingerprint = JournalStoreSupport.Fingerprint(entries);
+        var entries = append.Validate();
+        var fingerprint = entries.Fingerprint();
 
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
@@ -92,7 +92,7 @@ public sealed class SqliteJournalStore : IJournalStore
         JournalQuery query,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        _ = JournalStoreSupport.ApplyQuery(Array.Empty<JournalRecord>(), query);
+        _ = query.ApplyTo(Array.Empty<JournalRecord>());
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
 

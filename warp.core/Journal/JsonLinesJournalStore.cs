@@ -34,8 +34,8 @@ public sealed class JsonLinesJournalStore : IJournalStore
         JournalAppend append,
         CancellationToken cancellationToken = default)
     {
-        var entries = JournalStoreSupport.ValidateAppend(append);
-        var fingerprint = JournalStoreSupport.Fingerprint(entries);
+        var entries = append.Validate();
+        var fingerprint = entries.Fingerprint();
 
         await _gate.WaitAsync(cancellationToken);
         try
@@ -64,7 +64,7 @@ public sealed class JsonLinesJournalStore : IJournalStore
                 append.IdempotencyKey,
                 fingerprint,
                 entries);
-            var bytes = JsonSerializer.SerializeToUtf8Bytes(batch, JournalStoreSupport.JsonOptions);
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(batch, JournalJson.SerializerOptions);
 
             stream.Seek(0, SeekOrigin.End);
             await stream.WriteAsync(bytes, cancellationToken);
@@ -94,7 +94,7 @@ public sealed class JsonLinesJournalStore : IJournalStore
             var stream = lease.Stream;
             if (stream.Length != _knownLength)
                 ReloadFromStream(stream);
-            snapshot = JournalStoreSupport.ApplyQuery(_entries, query).ToArray();
+            snapshot = query.ApplyTo(_entries).ToArray();
         }
         finally
         {
@@ -119,7 +119,7 @@ public sealed class JsonLinesJournalStore : IJournalStore
         }
         if (state.HasTerminal)
             throw new JournalTerminalStateException($"Root {append.RootId} already has a terminal outcome.");
-        if (entries.Any(entry => JournalStoreSupport.IsTerminal(entry.Phase)) && state.HasTerminal)
+        if (entries.Any(entry => entry.Phase.IsTerminal()) && state.HasTerminal)
             throw new JournalTerminalStateException($"Root {append.RootId} already has a terminal outcome.");
 
         var existingIds = _entries.Select(entry => entry.Id).ToHashSet(StringComparer.Ordinal);
@@ -161,7 +161,7 @@ public sealed class JsonLinesJournalStore : IJournalStore
             {
                 var batch = JsonSerializer.Deserialize<JsonLineBatch>(
                     bytes.AsSpan(start, length),
-                    JournalStoreSupport.JsonOptions)
+                    JournalJson.SerializerOptions)
                     ?? throw new InvalidDataException("Journal contains an empty JSONL batch.");
                 ValidateRecoveredBatch(batch);
                 ApplyBatch(batch);
@@ -183,8 +183,8 @@ public sealed class JsonLinesJournalStore : IJournalStore
             batch.ExpectedSequence,
             batch.IdempotencyKey,
             batch.Entries);
-        var entries = JournalStoreSupport.ValidateAppend(append);
-        var fingerprint = JournalStoreSupport.Fingerprint(entries);
+        var entries = append.Validate();
+        var fingerprint = entries.Fingerprint();
         if (!StringComparer.Ordinal.Equals(fingerprint, batch.Fingerprint))
             throw new InvalidDataException($"Journal batch {batch.IdempotencyKey} failed its fingerprint check.");
 
@@ -205,7 +205,7 @@ public sealed class JsonLinesJournalStore : IJournalStore
 
         var entries = batch.Entries.ToArray();
         _entries.AddRange(entries);
-        var hasTerminal = entries.Any(entry => JournalStoreSupport.IsTerminal(entry.Phase));
+        var hasTerminal = entries.Any(entry => entry.Phase.IsTerminal());
         _roots.TryGetValue(batch.RootId, out var current);
         _roots[batch.RootId] = new RootState(
             entries[^1].Sequence,

@@ -3,23 +3,21 @@ using System.Text.Json;
 
 namespace Warp.Core.Journal;
 
-internal static class JournalStoreSupport
+internal static class JournalStoreInternalExtensions
 {
-    internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
-    internal static bool IsTerminal(JournalPhase phase) => phase is
+    internal static bool IsTerminal(this JournalPhase phase) => phase is
         JournalPhase.Completed or
         JournalPhase.Failed or
         JournalPhase.Cancelled or
         JournalPhase.Indeterminate;
 
-    internal static string Fingerprint(IReadOnlyCollection<JournalRecord> entries)
+    internal static string Fingerprint(this IReadOnlyCollection<JournalRecord> entries)
     {
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(entries, JsonOptions);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(entries, JournalJson.SerializerOptions);
         return Convert.ToHexString(SHA256.HashData(bytes));
     }
 
-    internal static IReadOnlyList<JournalRecord> ValidateAppend(JournalAppend append)
+    internal static IReadOnlyList<JournalRecord> Validate(this JournalAppend append)
     {
         ArgumentNullException.ThrowIfNull(append);
         if (string.IsNullOrWhiteSpace(append.RootId))
@@ -57,7 +55,7 @@ internal static class JournalStoreSupport
                 throw new ArgumentException("Append entry sequences must be contiguous and ordered.", nameof(append));
             if (!ids.Add(entry.Id))
                 throw new ArgumentException("Append entry ids must be unique.", nameof(append));
-            if (IsTerminal(entry.Phase))
+            if (entry.Phase.IsTerminal())
                 terminalCount++;
         }
 
@@ -67,9 +65,9 @@ internal static class JournalStoreSupport
         return entries;
     }
 
-    internal static IEnumerable<JournalRecord> ApplyQuery(
-        IEnumerable<JournalRecord> entries,
-        JournalQuery query)
+    internal static IEnumerable<JournalRecord> ApplyTo(
+        this JournalQuery query,
+        IEnumerable<JournalRecord> entries)
     {
         ArgumentNullException.ThrowIfNull(query);
         if (query.Limit <= 0)
