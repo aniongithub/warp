@@ -88,7 +88,8 @@ sequenceDiagram
 1. Create `.env.local` with your keys (see Prerequisites).
 2. Open the **Run and Debug** panel.
 3. Select **"Warp Monetization"** and start it. This compound launch runs the gateway, plasma, latinum, and the chat UI, all pointed at this example via `WARP_CONFIG_BASE_DIR=./examples/monetization`.
-4. Visit the chat UI at **http://localhost:8888**.
+4. The compound opens the chat UI using the generated `WARP_CHAT_HOST_PORT` from
+   `.devcontainer/ports.env`.
 
 On startup the latinum service (in `DEBUG`) opens an ngrok tunnel and registers **two** webhook endpoints with Stripe:
 
@@ -124,7 +125,7 @@ The response contains `payment_intent_id` and `client_secret`. Confirm the Payme
 
 **Result:** the user's `slips` quota (prepaid) `Limit` increases by `amount × CurrencyMultiplier` (default `1000`), so `$5 → +5000`.
 
-The chat UI at http://localhost:8888 demonstrates this flow end-to-end via its **Buy Credits** button (which POSTs to `/payment/create-intent/submit` &mdash; any `/payment/...` path ending in `/submit` works).
+The chat UI opened by the compound demonstrates this flow end-to-end via its **Buy Credits** button (which POSTs to `/payment/create-intent/submit` &mdash; any `/payment/...` path ending in `/submit` works).
 
 ![Screenshot placeholder: Buy Credits + Stripe test payment form]
 

@@ -131,7 +131,25 @@
             "request": "launch",
             "program": "${workspaceFolder}/examples/async/chat/main.py",
             "console": "integratedTerminal",
+            "redirectOutput": true,
             "cwd": "${workspaceFolder}/examples/async/chat",
+            "serverReadyAction": {
+                "action": "startDebugging",
+                "pattern": "Uvicorn running on .*",
+                "name": "Browser (async)"
+            },
+            "presentation": {
+                "hidden": true
+            }
+        },
+        {
+            "name": "Browser (async)",
+            "type": "pwa-chrome",
+            "request": "launch",
+            "browserLaunchLocation": "ui",
+            "url": "http://localhost:${input:warpChatHostPort}",
+            "webRoot": "${workspaceFolder}/examples/async/chat",
+            "userDataDir": "${workspaceFolder}/.vscode/cache/async",
             "presentation": {
                 "hidden": true
             }
@@ -183,7 +201,25 @@
             "request": "launch",
             "program": "${workspaceFolder}/examples/monetization/chat/main.py",
             "console": "integratedTerminal",
+            "redirectOutput": true,
             "cwd": "${workspaceFolder}/examples/monetization/chat",
+            "serverReadyAction": {
+                "action": "startDebugging",
+                "pattern": "Uvicorn running on .*",
+                "name": "Browser (monetization)"
+            },
+            "presentation": {
+                "hidden": true
+            }
+        },
+        {
+            "name": "Browser (monetization)",
+            "type": "pwa-chrome",
+            "request": "launch",
+            "browserLaunchLocation": "ui",
+            "url": "http://localhost:${input:warpChatHostPort}",
+            "webRoot": "${workspaceFolder}/examples/monetization/chat",
+            "userDataDir": "${workspaceFolder}/.vscode/cache/monetization",
             "presentation": {
                 "hidden": true
             }
@@ -226,6 +262,17 @@
                 "Warp.Latinum (monetization)", 
                 "Chat (monetization)"],
             "stopAll": true
+        }
+    ],
+    "inputs": [
+        {
+            "id": "warpChatHostPort",
+            "type": "command",
+            "command": "shellCommand.execute",
+            "args": {
+                "command": "grep ^WARP_CHAT_HOST_PORT= ${workspaceFolder}/.devcontainer/ports.env | cut -d= -f2 | tr -d '\\n'",
+                "useSingleResult": true
+            }
         }
     ]
 }
